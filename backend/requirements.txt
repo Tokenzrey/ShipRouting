@@ -1,0 +1,4 @@
+Flask
+netCDF4
+numpy
+flask_cors
