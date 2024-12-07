@@ -4,6 +4,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { showToast } from '@/components/Toast';
 import useAuthStore from '@/lib/Auth/useAuthStore';
 import { LoginFormRequest } from '@/types/login';
+import { dummyPassword, dummyUsername } from '@/constant/user';
 
 export const useLogin = () => {
   const [isPending, setIsPending] = useState(false);
@@ -13,11 +14,6 @@ export const useLogin = () => {
 
   const handleLogin = async (data: LoginFormRequest) => {
     const { username, password } = data;
-
-    // Simulasi login lokal dengan data statis (sebagai contoh)
-    const dummyUsername = 'Admin';
-    const dummyPassword = '123';
-
     setIsPending(true); // Set isPending menjadi true saat proses login dimulai
     try {
       if (username === dummyUsername && password === dummyPassword) {

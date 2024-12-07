@@ -2,7 +2,7 @@
 import Sidebar from '@/components/sidebar';
 import withAuth from '@/lib/Auth/withAuth';
 import DataVisualizationdPage from './containers/dataVisualitization';
-import Map from './components/map';
+import Map from './containers/map';
 
 export default withAuth(DashboardPage, 'auth');
 function DashboardPage() {

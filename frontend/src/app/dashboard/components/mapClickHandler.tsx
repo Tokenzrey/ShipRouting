@@ -1,4 +1,4 @@
-import { Overlay } from 'ol';
+import { Feature, Overlay } from 'ol';
 import { Coordinate } from 'ol/coordinate';
 import { toLonLat } from 'ol/proj';
 
@@ -79,32 +79,53 @@ export class MapClickHandler {
    * Menangani klik pada peta, mendapatkan nama tempat, dan memperbarui popup.
    * @param event Event klik peta yang berisi koordinat.
    */
-  public async handleClick(event: { coordinate: Coordinate }) {
+  public async handleClick(event: {
+    coordinate: Coordinate;
+    features?: Feature[];
+  }) {
     const coordinate = event.coordinate;
     const [lon, lat] = toLonLat(coordinate);
 
     // Set status loading ke true
     this.setLoading(true);
 
-    // Update data popup dengan koordinat awal
-    this.onPopupDataChange?.({
-      latitude: lat,
-      longitude: lon,
-    });
-
-    // Posisikan overlay pada koordinat yang diklik
-    this.overlay.setPosition(coordinate);
-
     try {
-      // Ambil nama tempat dari API
+      if (event.features && event.features.length > 0) {
+        // Ambil fitur pertama yang diklik
+        const feature = event.features[0];
+        const properties = feature.getProperties();
+
+        if (properties.category) {
+          // Jika marker memiliki kategori (gas/lng)
+          const { name } = properties;
+
+          // Perbarui data popup dengan data marker
+          this.onPopupDataChange?.({
+            placeName: name,
+            latitude: lat,
+            longitude: lon,
+          });
+
+          // Tampilkan popup di lokasi marker
+          this.overlay.setPosition(coordinate);
+
+          // Tidak perlu melanjutkan ke API geocoding
+          return;
+        }
+      }
+
+      // Jika bukan marker, lanjutkan dengan geocoding
       const placeName = await this.fetchPlaceName(lon, lat);
 
-      // Perbarui data popup dengan nama tempat
+      // Perbarui data popup dengan nama tempat dari geocoding
       this.onPopupDataChange?.({
         placeName,
         latitude: lat,
         longitude: lon,
       });
+
+      // Posisikan overlay pada lokasi yang diklik
+      this.overlay.setPosition(coordinate);
     } catch (error) {
       // Tampilkan pesan error jika terjadi kesalahan
       alert(error instanceof Error ? error.message : 'Terjadi kesalahan');

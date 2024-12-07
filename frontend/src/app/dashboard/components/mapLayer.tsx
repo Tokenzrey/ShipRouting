@@ -1,8 +1,10 @@
-import { Vector as VectorLayer } from 'ol/layer';
-import { Vector as VectorSource } from 'ol/source';
+import VectorSource from 'ol/source/Vector';
+import VectorLayer from 'ol/layer/Vector';
+import { Style, Icon, Text, Fill, Stroke } from 'ol/style';
 import { Feature } from 'ol';
-import { LineString } from 'ol/geom';
-import { Stroke, Style } from 'ol/style';
+import { Point, LineString } from 'ol/geom';
+import { fromLonLat } from 'ol/proj';
+import { markerData } from '@/contents/markerData';
 
 // Interface untuk konfigurasi pembuatan layer grid
 interface CreateGridLayerOptions {
@@ -84,4 +86,46 @@ export class GridLayer {
   }
 }
 
-export default GridLayer;
+/**
+ * Membuat layer marker dari data markerData.
+ * @returns VectorLayer berisi marker sesuai kategori.
+ */
+export const createMarkerLayer = () => {
+  const vectorSource = new VectorSource();
+
+  Object.entries(markerData).forEach(([category, markers]) => {
+    markers.forEach(({ name, coord }) => {
+      const markerFeature = new Feature({
+        geometry: new Point(fromLonLat(coord)),
+        name,
+        category,
+      });
+
+      const iconSrc =
+        category === 'LNG' ? '/images/lng.png' : '/images/gas.png';
+      const colorIcon = category === 'LNG' ? '#ff0404' : '#ffac04';
+      markerFeature.setStyle(
+        new Style({
+          image: new Icon({
+            src: iconSrc,
+            scale: 1.3,
+          }),
+          text: new Text({
+            text: name,
+            font: 'bold 14px Arial', // Font teks lebih besar
+            fill: new Fill({ color: colorIcon }), // Warna teks putih
+            stroke: new Stroke({ color: '#000', width: 3 }), // Outline hitam untuk kontras
+            offsetY: -25, // Geser teks ke atas marker
+          }),
+        }),
+      );
+
+      vectorSource.addFeature(markerFeature);
+    });
+  });
+
+  return new VectorLayer({
+    source: vectorSource,
+    zIndex: 1000,
+  });
+};

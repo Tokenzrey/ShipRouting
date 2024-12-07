@@ -38,5 +38,3 @@ export const markerData = {
     { name: 'PLTMG Nias', coord: [97.6928621176378, 1.2155522617459] },
   ],
 };
-
-export const indonesiaCoords = [117.2, -2.5489];
