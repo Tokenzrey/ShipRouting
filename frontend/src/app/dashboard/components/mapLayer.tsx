@@ -5,6 +5,7 @@ import { Feature } from 'ol';
 import { Point, LineString } from 'ol/geom';
 import { fromLonLat } from 'ol/proj';
 import { markerData } from '@/contents/markerData';
+import { useRouteStore } from '@/lib/GlobalState/state';
 
 // Interface untuk konfigurasi pembuatan layer grid
 interface CreateGridLayerOptions {
@@ -127,5 +128,44 @@ export const createMarkerLayer = () => {
   return new VectorLayer({
     source: vectorSource,
     zIndex: 1000,
+  });
+};
+
+export const createLocationMarkers = (): VectorLayer => {
+  const vectorSource = new VectorSource();
+
+  // Ambil lokasi `from` dan `destination` dari global state
+  const { locations } = useRouteStore.getState();
+
+  // Tambahkan marker untuk setiap lokasi
+  locations.forEach((location) => {
+    const markerFeature = new Feature({
+      geometry: new Point(fromLonLat([location.longitude, location.latitude])),
+      name: location.name,
+      category: location.type, // Tipe marker
+    });
+
+    markerFeature.setStyle(
+      new Style({
+        image: new Icon({
+          src: '/images/pin.png', // Ikon marker
+          scale: 1.8,
+        }),
+        text: new Text({
+          text: location.name,
+          font: 'bold 14px Arial', // Font teks
+          fill: new Fill({ color: '#00ccff' }), // Warna teks
+          stroke: new Stroke({ color: '#000', width: 3 }), // Outline hitam
+          offsetY: -25, // Geser teks ke atas marker
+        }),
+      }),
+    );
+
+    vectorSource.addFeature(markerFeature);
+  });
+
+  return new VectorLayer({
+    source: vectorSource,
+    zIndex: 1100, // Prioritas di atas layer lainnya
   });
 };

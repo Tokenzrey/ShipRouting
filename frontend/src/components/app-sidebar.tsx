@@ -18,6 +18,7 @@ import { NavUser } from './nav-user';
 import { Separator } from './ui/separator';
 import IconButton from './buttons/IconButton';
 import Typography from './Typography';
+import { getFormattedDate } from '@/lib/getDate';
 
 // This is sample data.
 const data = {
@@ -29,6 +30,21 @@ const data = {
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const router = useRouter();
   const { logout } = useAuthStore(); // Make sure to destructure correctly if it's exported as part of an object
+  const [currentDate, setCurrentDate] = React.useState(getFormattedDate());
+
+  React.useEffect(() => {
+    const updateDate = () => {
+      const newDate = getFormattedDate();
+      setCurrentDate(newDate);
+    };
+
+    // Interval untuk memeriksa perubahan hari
+    const interval = setInterval(() => {
+      updateDate();
+    }, 60000); // Perbarui setiap menit
+
+    return () => clearInterval(interval); // Bersihkan interval saat komponen unmount
+  }, []);
 
   const handleLogout = () => {
     logout();
@@ -40,7 +56,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
     <Sidebar {...props}>
       <SidebarHeader>
         <NavUser user={data.user} />
-        <SidebarTrigger className='absolute -right-8 top-2 text-typo-normal-white hover:text-oceanBlue bg-oceanBlue'/>
+        <SidebarTrigger className='absolute -right-8 top-2 bg-oceanBlue text-typo-normal-white hover:text-oceanBlue' />
       </SidebarHeader>
       <Separator />
       <SidebarContent className='SidebarContent'>
@@ -59,7 +75,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
             weight='medium'
             variant='b5'
           >
-            November 29th, 2024
+            {currentDate}
           </Typography>
         </div>
         <IconButton

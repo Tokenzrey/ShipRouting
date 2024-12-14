@@ -1,6 +1,7 @@
 import { Feature, Overlay } from 'ol';
 import { Coordinate } from 'ol/coordinate';
 import { toLonLat } from 'ol/proj';
+import { useRouteStore } from '@/lib/GlobalState/state';
 
 // Interface untuk opsi konfigurasi MapClickHandler
 interface MapClickHandlerOptions {
@@ -86,6 +87,10 @@ export class MapClickHandler {
     const coordinate = event.coordinate;
     const [lon, lat] = toLonLat(coordinate);
 
+    // Ambil global state untuk lokasi
+    const { locationTypeToAdd, addLocation, setLocationTypeToAdd } =
+      useRouteStore.getState(); // Akses global state
+
     // Set status loading ke true
     this.setLoading(true);
 
@@ -98,12 +103,27 @@ export class MapClickHandler {
         if (properties.category) {
           // Jika marker memiliki kategori (gas/lng)
           const { name } = properties;
+          // Ambil koordinat langsung dari geometry properti
+          const [markerLon, markerLat] = toLonLat(
+            properties.geometry.flatCoordinates,
+          );
 
+          console.log('Marker Coordinates:', { markerLon, markerLat });
+          // Tambahkan lokasi ke global state
+          if (locationTypeToAdd) {
+            addLocation({
+              type: locationTypeToAdd, // from atau destination
+              name: name, // Nama tempat
+              longitude: markerLon, // Longitude
+              latitude: markerLat, // Latitude
+            });
+            setLocationTypeToAdd(null);
+          }
           // Perbarui data popup dengan data marker
           this.onPopupDataChange?.({
             placeName: name,
-            latitude: lat,
-            longitude: lon,
+            latitude: markerLat,
+            longitude: markerLon,
           });
 
           // Tampilkan popup di lokasi marker
@@ -116,6 +136,17 @@ export class MapClickHandler {
 
       // Jika bukan marker, lanjutkan dengan geocoding
       const placeName = await this.fetchPlaceName(lon, lat);
+
+      // Tambahkan lokasi ke global state
+      if (locationTypeToAdd) {
+        addLocation({
+          type: locationTypeToAdd, // from atau destination
+          name: placeName || '', // Nama tempat
+          longitude: lon, // Longitude
+          latitude: lat, // Latitude
+        });
+        setLocationTypeToAdd(null);
+      }
 
       // Perbarui data popup dengan nama tempat dari geocoding
       this.onPopupDataChange?.({
