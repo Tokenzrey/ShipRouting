@@ -70,7 +70,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
               'md:px-[22px] md:py-2',
               'text-sm md:text-base',
             ],
-            size === 'small' && ['md:px-[18px] md:py-1', 'text-xs md:text-sm'],
+            size === 'small' && ['md:px-[16px] md:py-[0.3rem]', 'text-[8px] md:text-xs'],
           ],
           //#endregion  //*======== Size ===========
           //#region  //*=========== Variants ===========

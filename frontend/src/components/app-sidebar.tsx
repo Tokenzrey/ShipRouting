@@ -63,7 +63,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         <NavMain />
       </SidebarContent>
       <Separator />
-      <SidebarFooter className='flex flex-row justify-between px-4 py-3'>
+      <SidebarFooter className='flex flex-row justify-between px-1.5 py-2'>
         <div className='flex items-center gap-1 rounded-sm border-2 border-typo-normal-white px-2 py-1'>
           <CalendarIcon
             className='text-typo-normal-white'

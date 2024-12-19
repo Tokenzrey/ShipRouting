@@ -1,8 +1,6 @@
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import {
-  SidebarMenu,
-  SidebarMenuItem,
-} from '@/components/ui/sidebar';
+import { SidebarMenu, SidebarMenuItem } from '@/components/ui/sidebar';
+import Typography from './Typography';
 
 export function NavUser({
   user,
@@ -11,22 +9,27 @@ export function NavUser({
     name: string;
   };
 }) {
-
   return (
     <SidebarMenu>
-      <SidebarMenuItem className='flex items-center justify-between px-2 py-3'>
+      <SidebarMenuItem className='flex items-center justify-between px-[0.125rem] py-[0.25rem]'>
         <div className='flex items-center gap-2'>
-          <Avatar className='h-8 w-8 rounded-lg'>
+          <Avatar className='h-8 w-8 rounded-md'>
             <AvatarImage src='/images/avatar.jpeg' alt={user.name} />
-            <AvatarFallback className='rounded-lg'>CN</AvatarFallback>
+            <AvatarFallback className='rounded-md'>CN</AvatarFallback>
           </Avatar>
           <div className='grid flex-1 text-left text-sm leading-tight'>
-            <span className='truncate font-semibold text-typo-normal-white'>
+            <Typography
+              className='truncate font-semibold text-typo-normal-white'
+              variant='b2'
+            >
               {user.name}
-            </span>
-            <span className='truncate text-xs text-typo-normal-secondary'>
+            </Typography>
+            <Typography
+              className='truncate text-xs text-typo-normal-secondary'
+              variant='b3'
+            >
               Captain
-            </span>
+            </Typography>
           </div>
         </div>
       </SidebarMenuItem>

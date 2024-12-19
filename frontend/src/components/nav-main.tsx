@@ -55,12 +55,12 @@ export function NavMain() {
   }, [locations]);
 
   return (
-    <section className='my-4'>
-      <div className='px-4'>
-        <Typography weight='semibold' className='mb-1.5' variant='b2'>
+    <section className='my-2.5'>
+      <div className='px-2.5'>
+        <Typography weight='semibold' className='mb-[0.2rem]' variant='b2'>
           SHIP PARTICULAR
         </Typography>
-        <div className='ml-1.5 space-y-1'>
+        <div className='mb-[0.2rem] space-y-[0.15rem]'>
           {shipSpecification.map((item, index) => (
             <section key={index} className='flex'>
               <Typography weight='medium' className='w-[35%]'>
@@ -72,16 +72,16 @@ export function NavMain() {
             </section>
           ))}
         </div>
-        <Separator className='mt-3' />
+        <Separator className='mt-2.5' />
       </div>
-      <div className='mt-5 px-4'>
-        <Typography weight='semibold' className='mb-1.5' variant='b2'>
+      <div className='mt-2.5 px-2.5'>
+        <Typography weight='semibold' className='mb-[0.2rem]' variant='b2'>
           SHIP OPERATIONAL DATA
         </Typography>
-        <div className='ml-1.5 space-y-4'>
+        <div className='mb-[0.15rem] space-y-2.5'>
           {/* Input Ship Speed */}
           <div className='flex items-center'>
-            <Typography weight='medium' className='w-[45%]'>
+            <Typography variant='b4' weight='medium' className='w-[30%]'>
               Ship Speed
             </Typography>
             <div className='flex w-[55%] items-center gap-2'>
@@ -89,31 +89,33 @@ export function NavMain() {
                 type='number'
                 value={shipSpeed || ''}
                 onChange={(e) => setShipSpeed(Number(e.target.value))}
-                className='h-7 w-1/2 rounded border-0 px-2 ring-0'
+                className='h-5 w-12 rounded border-0 px-2 ring-0 md:text-[0.5625rem] md:leading-[0.8125rem]' // b4 variant applied here
                 placeholder='Enter speed'
                 min='0'
               />
-              <Typography>Kn.</Typography>
+              <Typography variant='b4'>Kn.</Typography>
             </div>
           </div>
 
           {/* Select Ship Condition */}
           <div className='flex items-center'>
-            <Typography weight='medium' className='w-[45%]'>
+            <Typography variant='b4' weight='medium' className='w-[30%]'>
               Load Cond.
             </Typography>
-            <div className='w-[55%]'>
+            <div className='w-[35%]'>
               <Select
                 value={loadCondition || 'full_load'}
                 onValueChange={setLoadCondition}
               >
-                <SelectTrigger className='h-7'>
+                <SelectTrigger className='h-5 md:text-[0.5625rem] md:leading-[0.8125rem]'>
+                  {' '}
+                  {/* b4 variant classes */}
                   <SelectValue placeholder='Select Ship Condition'>
                     {loadCondition === 'full_load' && 'Full Load'}
                     {loadCondition === 'ballast' && 'Ballast'}
                   </SelectValue>
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent className='md:text-[0.5625rem] md:leading-[0.8125rem]'>
                   <SelectItem value='full_load'>Full Load</SelectItem>
                   <SelectItem value='ballast'>Ballast</SelectItem>
                 </SelectContent>
@@ -123,19 +125,19 @@ export function NavMain() {
         </div>
         <Separator className='mt-3' />
       </div>
-      <div className='mt-5 px-4'>
+      <div className='mt-2.5 px-2.5'>
         <Typography weight='semibold' className='mb-1.5' variant='b2'>
           Route Planner
         </Typography>
-        <div className='ml-1.5 space-y-4'>
-          <section className='flex flex-col gap-4'>
+        <div className='ml-1.5 space-y-2.5'>
+          <section className='flex flex-col gap-2.5'>
             {!locations.some((loc) => loc.type === 'from') && (
-              <div className='flex items-center gap-3'>
+              <div className='flex items-center gap-2'>
                 <div
-                  className='flex h-10 w-10 cursor-pointer items-center justify-center rounded-full border-2 border-typo-normal-white text-typo-normal-white'
+                  className='flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border-[1.5px] border-typo-normal-white text-typo-normal-white'
                   onClick={() => setLocationTypeToAdd('from')}
                 >
-                  <Plus size={28} color='#ffffff' />
+                  <Plus size={16} color='#ffffff' />
                 </div>
                 <Typography
                   className='text-typo-normal-white'
@@ -148,9 +150,9 @@ export function NavMain() {
             )}
 
             {locations.map((location, index) => (
-              <div key={index} className='relative flex flex-col gap-3'>
+              <div key={index} className='relative flex flex-col gap-2'>
                 <div className='relative flex items-center'>
-                  <div className='flex h-10 w-10 items-center justify-center rounded-full border-2 border-typo-normal-white text-typo-normal-white'>
+                  <div className='flex h-7 w-7 items-center justify-center rounded-full border-[1.5px] border-typo-normal-white text-typo-normal-white'>
                     <Typography
                       className='text-typo-normal-white'
                       weight='medium'
@@ -159,9 +161,9 @@ export function NavMain() {
                       {location.type === 'from' ? 'F' : 'D'}
                     </Typography>
                   </div>
-                  <div className='ml-3 flex w-[calc(100%-3rem)] items-center justify-between'>
+                  <div className='ml-2 flex w-[calc(100%-3rem)] items-center justify-between'>
                     <Typography
-                      className='w-min text-typo-normal-white'
+                      className='w-full truncate text-typo-normal-white'
                       variant='b3'
                       weight='semibold'
                     >
@@ -171,6 +173,8 @@ export function NavMain() {
                       variant='danger'
                       onClick={() => removeLocation(index)}
                       Icon={X}
+                      IconClassName='text-[12px]'
+                      className='h-5 w-5'
                       size='small'
                     />
                   </div>
@@ -179,16 +183,16 @@ export function NavMain() {
                 {locations.some((loc) => loc.type === 'from') &&
                   locations.some((loc) => loc.type === 'destination') &&
                   index === 0 && (
-                    <div className='flex items-center gap-3'>
-                      <div className='relative flex h-fit w-10 flex-col items-center'>
-                        <div className='h-3 w-3 rounded-full bg-typo-normal-white'></div>
-                        <div className='h-20 w-[2.5px] bg-typo-normal-white'></div>
+                    <div className='flex-start flex items-center gap-1'>
+                      <div className='relative flex h-fit w-7 flex-col items-center'>
+                        <div className='h-1.5 w-1.5 -translate-x-[0.4px] rounded-full bg-typo-normal-white'></div>
+                        <div className='h-16 w-[1.5px] bg-typo-normal-white'></div>
                         <ChevronDown
                           className='absolute -bottom-2.5 text-typo-normal-white'
-                          strokeWidth={2.5}
+                          strokeWidth={1.5}
                         />
                       </div>
-                      <div className='flex w-[calc(100%-52px)] flex-col gap-2'>
+                      <div className='flex w-[calc(100%-52px)] flex-col gap-1'>
                         <div className='flex flex-col'>
                           <Typography
                             className='text-typo-normal-white'
@@ -234,12 +238,12 @@ export function NavMain() {
 
             {locations.some((loc) => loc.type === 'from') &&
               !locations.some((loc) => loc.type === 'destination') && (
-                <div className='flex items-center gap-3'>
+                <div className='flex items-center gap-2'>
                   <div
-                    className='flex h-10 w-10 cursor-pointer items-center justify-center rounded-full border-2 border-typo-normal-white text-typo-normal-white'
+                    className='flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border-[1.5px] border-typo-normal-white text-typo-normal-white'
                     onClick={() => setLocationTypeToAdd('destination')}
                   >
-                    <Plus size={28} color='#ffffff' />
+                    <Plus size={16} color='#ffffff' />
                   </div>
                   <Typography
                     className='text-typo-normal-white'
@@ -254,15 +258,16 @@ export function NavMain() {
             {/* Optimal and Safest Route Buttons */}
             {locations.some((loc) => loc.type === 'from') &&
               locations.some((loc) => loc.type === 'destination') && (
-                <div className='mt-2 flex justify-center gap-3'>
+                <div className='mt-1 flex justify-center gap-2'>
                   <Button
                     variant='success'
                     appearance='dark'
-                    className='rounded-md'
+                    className='rounded-sm'
+                    size='small'
                   >
                     Normal
                   </Button>
-                  <Button appearance='dark' className='rounded-md'>
+                  <Button appearance='dark' className='rounded-sm' size='small'>
                     Safest
                   </Button>
                 </div>
