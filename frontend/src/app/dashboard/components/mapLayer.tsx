@@ -127,7 +127,7 @@ export const createMarkerLayer = () => {
 
   return new VectorLayer({
     source: vectorSource,
-    zIndex: 1000,
+    zIndex: 1200,
   });
 };
 
@@ -166,6 +166,6 @@ export const createLocationMarkers = (): VectorLayer => {
 
   return new VectorLayer({
     source: vectorSource,
-    zIndex: 1100, // Prioritas di atas layer lainnya
+    zIndex: 1200, // Prioritas di atas layer lainnya
   });
 };

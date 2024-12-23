@@ -5,7 +5,7 @@ export const CONFIG = {
   MAP_ZOOM: 5,
   MIN_ZOOM: 4,
   MAX_ZOOM: 14,
-  INDONESIA_EXTENT: [92.0, -15.0, 141.0, 10.0] as [
+  INDONESIA_EXTENT: [92.0, -12.5, 141.0, 10.0] as [
     number,
     number,
     number,

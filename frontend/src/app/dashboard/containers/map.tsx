@@ -14,65 +14,67 @@ import {
   createMarkerLayer,
 } from '../components/mapLayer';
 import { useRouteStore } from '@/lib/GlobalState/state';
-import VectorLayer from 'ol/layer/Vector';
 
-/**
- * Komponen MeterGridMap
- * Menampilkan peta interaktif menggunakan OpenLayers dengan fitur grid, marker, dan popup.
- */
+import VectorLayer from 'ol/layer/Vector';
+import { SlidersVertical } from 'lucide-react';
+import { Checkbox } from '@/components/ui/checkbox';
+
+import {
+  scheduleWaveOverlayUpdate,
+  updateDynamicGridLayer,
+} from '../components/OverlayHandler';
+
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
+import { Separator } from '@/components/ui/separator';
+import Typography from '@/components/Typography';
+
 const MeterGridMap: React.FC = () => {
-  // Referensi DOM untuk elemen map dan popup
   const mapRef = useRef<HTMLDivElement | null>(null);
   const popupRef = useRef<HTMLDivElement | null>(null);
-
-  // Referensi untuk instance Map dan layer lokasi
   const mapInstanceRef = useRef<Map | null>(null);
   const locationLayerRef = useRef<VectorLayer | null>(null);
-
-  // State untuk mengelola status loading dan data popup
-  const [loading, setLoading] = useState(false);
-  const [popupData, setPopupData] = useState<PopupData | null>(null);
-
-  // Referensi untuk instance MapClickHandler
+  const waveLayerRef = useRef<VectorLayer | null>(null);
   const clickHandlerRef = useRef<MapClickHandler | null>(null);
 
-  // Global state dari RouteStore
+  const [loading, setLoading] = useState(false);
+  const [popupData, setPopupData] = useState<PopupData | null>(null);
+  const [overlayType, setOverlayType] = useState<
+    'htsgwsfc' | 'perpwsfc' | null
+  >('htsgwsfc');
+  const [animationEnabled, setAnimationEnabled] = useState(false);
+
+  const [loadingOverlayType, setLoadingOverlayType] = useState(false);
   const locations = useRouteStore((state) => state.locations);
 
+  // Initialize the map
   useEffect(() => {
     if (!mapRef.current || !popupRef.current) return;
 
-    /**
-     * Inisialisasi peta dengan konfigurasi awal
-     */
     const map = new Map({
       target: mapRef.current,
       view: new View({
-        center: fromLonLat(CONFIG.MAP_CENTER), // Koordinat pusat peta
-        zoom: CONFIG.MAP_ZOOM, // Zoom awal
-        minZoom: CONFIG.MIN_ZOOM, // Zoom minimum
-        maxZoom: CONFIG.MAX_ZOOM, // Zoom maksimum
-        constrainResolution: true, // Membatasi resolusi zoom
-        extent: fromLonLatExtent(CONFIG.INDONESIA_EXTENT), // Batas area peta
+        center: fromLonLat(CONFIG.MAP_CENTER),
+        zoom: CONFIG.MAP_ZOOM,
+        minZoom: CONFIG.MIN_ZOOM,
+        maxZoom: CONFIG.MAX_ZOOM,
+        constrainResolution: true,
+        extent: fromLonLatExtent(CONFIG.INDONESIA_EXTENT),
       }),
     });
 
-    // Simpan referensi instance Map
     mapInstanceRef.current = map;
 
-    /**
-     * Tambahkan overlay untuk popup
-     */
     const overlay = new Overlay({
-      element: popupRef.current, // Elemen popup
-      positioning: 'bottom-center', // Posisi popup relatif ke klik
-      stopEvent: true, // Mencegah propagasi event ke peta
+      element: popupRef.current,
+      positioning: 'bottom-center',
+      stopEvent: true,
     });
     map.addOverlay(overlay);
 
-    /**
-     * Inisialisasi MapClickHandler untuk menangani klik pada peta
-     */
     clickHandlerRef.current = new MapClickHandler({
       apiKey: MAPTILER_API_KEY,
       onLoadingChange: setLoading,
@@ -80,32 +82,24 @@ const MeterGridMap: React.FC = () => {
       overlay,
     });
 
-    /**
-     * Terapkan style MapTiler ke peta
-     */
     apply(map, CONFIG.STYLE_URL)
-      .then(() => console.log('MapTiler style berhasil diterapkan'))
+      .then(() => {
+        console.log('MapTiler style applied successfully');
+        const mapTilerLayer = map.getLayers().item(0);
+        if (mapTilerLayer) mapTilerLayer.setZIndex(900);
+      })
       .catch((error) => {
-        console.error('Gagal memuat style MapTiler:', error);
-        alert('Gagal memuat peta. Periksa koneksi atau API key Anda.');
+        console.error('Failed to load MapTiler style:', error);
+        alert('Failed to load the map. Check your connection or API key.');
       });
 
-    /**
-     * Tambahkan layer marker default
-     */
     const markerLayer = createMarkerLayer();
     map.addLayer(markerLayer);
 
-    /**
-     * Tambahkan layer lokasi dengan marker
-     */
     const initialLocationLayer = createLocationMarkers();
     locationLayerRef.current = initialLocationLayer;
     map.addLayer(initialLocationLayer);
 
-    /**
-     * Event handler untuk klik pada peta
-     */
     map.on('click', (event) => {
       const features: Feature[] = [];
       map.forEachFeatureAtPixel(event.pixel, (feature) => {
@@ -118,38 +112,51 @@ const MeterGridMap: React.FC = () => {
       });
     });
 
-    /**
-     * Bersihkan instance Map saat komponen dilepas
-     */
     return () => {
       map.setTarget(undefined);
     };
   }, []);
 
-  /**
-   * Sinkronisasi lokasi di global state dengan layer marker
-   */
+  // Update overlay layer based on selection
+  useEffect(() => {
+    if (!mapInstanceRef.current || !overlayType) return;
+    setLoadingOverlayType(true); // Start loading state
+    updateDynamicGridLayer(mapInstanceRef, waveLayerRef, overlayType).finally(
+      () => {
+        setLoadingOverlayType(false); // End loading state
+      },
+    );
+  }, [overlayType]);
+
+  // Schedule updates if animation is enabled
+  useEffect(() => {
+    if (!animationEnabled || !mapInstanceRef.current) return;
+    const cleanup = scheduleWaveOverlayUpdate(
+      mapInstanceRef,
+      waveLayerRef,
+      overlayType!,
+    );
+    return () => cleanup();
+  }, [animationEnabled, overlayType]);
+
+  // Sync markers with global locations
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return;
 
-    // Hapus layer lokasi sebelumnya
     if (locationLayerRef.current) {
-      map.removeLayer(locationLayerRef.current);
+      const source = locationLayerRef.current.getSource();
+      source?.clear();
+      const newFeatures = createLocationMarkers().getSource()?.getFeatures();
+      if (newFeatures) source?.addFeatures(newFeatures);
     }
-
-    // Tambahkan layer lokasi baru berdasarkan state
-    const newLocationLayer = createLocationMarkers();
-    locationLayerRef.current = newLocationLayer;
-    map.addLayer(newLocationLayer);
   }, [locations]);
 
   return (
     <>
-      {/* Elemen container untuk peta */}
+      {/* Map Container */}
       <div ref={mapRef} className='h-screen w-full' />
-
-      {/* Elemen container untuk popup */}
+      {/* Popup Container */}
       <div ref={popupRef}>
         {popupData && (
           <Popup
@@ -160,6 +167,93 @@ const MeterGridMap: React.FC = () => {
             onClose={() => clickHandlerRef.current?.clearPopup()}
           />
         )}
+      </div>
+      {/* Control Panel */}
+      <div className='absolute left-1/2 top-0 flex -translate-x-1/2 items-center justify-center rounded-b-md'>
+        <Popover>
+          <PopoverTrigger asChild>
+            <button className='rounded-b-md bg-typo-normal-white px-3 py-2'>
+              <SlidersVertical color='#1f2937' size={20} />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent className='relative rounded-md'>
+            <section className='relative flex justify-between gap-8'>
+              <div className='block space-y-2'>
+                <div>
+                  <Typography
+                    className='text-typo-normal-main'
+                    variant='h3'
+                    weight='bold'
+                  >
+                    Overlay
+                  </Typography>
+                  <Separator className='mt-1.5' />
+                </div>
+                <div className='flex flex-col gap-1.5'>
+                  <div className='flex items-center space-x-2'>
+                    <Checkbox
+                      id='htsgwsfc'
+                      checked={overlayType === 'htsgwsfc'}
+                      onCheckedChange={(checked) =>
+                        setOverlayType(checked ? 'htsgwsfc' : null)
+                      }
+                      disabled={loadingOverlayType}
+                    />
+                    <label
+                      htmlFor='htsgwsfc'
+                      className='text-sm font-medium leading-none text-gray-800'
+                    >
+                      Surface significant height
+                    </label>
+                  </div>
+                  <div className='flex items-center space-x-2'>
+                    <Checkbox
+                      id='perpwsfc'
+                      checked={overlayType === 'perpwsfc'}
+                      onCheckedChange={(checked) =>
+                        setOverlayType(checked ? 'perpwsfc' : null)
+                      }
+                      disabled={loadingOverlayType}
+                    />
+                    <label
+                      htmlFor='perpwsfc'
+                      className='text-sm font-medium leading-none text-gray-800'
+                    >
+                      Surface wave mean period
+                    </label>
+                  </div>
+                </div>
+              </div>
+              <div className='block space-y-2'>
+                <div>
+                  <Typography
+                    className='text-typo-normal-main'
+                    variant='h3'
+                    weight='bold'
+                  >
+                    Animation
+                  </Typography>
+                  <Separator className='mt-1.5' />
+                </div>
+                <div className='flex items-center space-x-2'>
+                  <Checkbox
+                    id='waves'
+                    checked={animationEnabled}
+                    onCheckedChange={(checked) =>
+                      setAnimationEnabled(checked === true)
+                    }
+                  />
+                  <label
+                    htmlFor='waves'
+                    className='text-sm font-medium leading-none text-gray-800'
+                  >
+                    Waves
+                  </label>
+                </div>
+              </div>
+            </section>
+          </PopoverContent>
+        </Popover>
       </div>
     </>
   );
