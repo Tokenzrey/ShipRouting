@@ -1,129 +1,90 @@
+import os
 import json
-import math
-from shapely.geometry import Point, Polygon, MultiPolygon, shape
+import matplotlib.pyplot as plt
+import numpy as np
 
-# Konfigurasi
-CONFIG = {
-    "START_NODE": {"lon": 113.53701042040963, "lat": -4.736794825727632},
-    "INDONESIA_EXTENT": [92.0, -15.0, 141.0, 10.0],
-    "GRID_SPACING": 1 / 111.32,  # 1km in degrees
-    "GEOJSON_FILE": "eez.json",  # Path to your GeoJSON file
-    "OUTPUT_FILE": "region_graph.json",  # Output JSON file
-}
+# Step 1: Pilih file cache
+cache_folder = os.path.join(os.getcwd(), "backend", "data", "cache")
 
-def haversine_distance(lon1, lat1, lon2, lat2):
-    """Calculate the great-circle distance between two points."""
-    R = 6371  # Earth's radius in km
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return R * c  # Distance in km
+if not os.path.exists(cache_folder):
+    print(f"Cache folder {cache_folder} does not exist.")
+    exit(1)
 
-def create_region_graph():
-    print("Loading GeoJSON file...")
-    with open(CONFIG["GEOJSON_FILE"], "r") as f:
-        geojson = json.load(f)
+cache_files = [f for f in os.listdir(cache_folder) if f.endswith('.json')]
+if not cache_files:
+    print(f"No cache files found in {cache_folder}.")
+    exit(1)
 
-    # Extract MultiPolygon or Polygon from GeoJSON
-    geometries = []
-    for feature in geojson["features"]:
-        geom = shape(feature["geometry"])
-        if isinstance(geom, Polygon):
-            geometries.append(geom)
-        elif isinstance(geom, MultiPolygon):
-            geometries.extend(list(geom.geoms))  # Use .geoms to iterate over polygons in MultiPolygon
+print(f"Available cache files:")
+for idx, file in enumerate(cache_files):
+    print(f"[{idx}] {file}")
 
-    main_geometry = MultiPolygon(geometries)
+try:
+    selected_idx = int(input("Select a cache file index: ").strip())
+    selected_cache_file = cache_files[selected_idx]
+except (ValueError, IndexError):
+    print("Invalid cache file index.")
+    exit(1)
 
-    print(f"Loaded GeoJSON with {len(geometries)} geometries.")
-    print("Initializing region graph...")
+cache_file_path = os.path.join(cache_folder, selected_cache_file)
 
-    # Initialize graph
-    graph = {
-        "nodes": {},  # {key: {lon, lat}}
-        "edges": [],  # [{from, to, weight}]
-    }
+# Step 2: Load cache file JSON
+try:
+    with open(cache_file_path, 'r') as f:
+        combined_response = json.load(f)
+except Exception as e:
+    print(f"Error loading cache file: {e}")
+    exit(1)
 
-    # Initialize processing queue
-    start_lon = CONFIG["START_NODE"]["lon"]
-    start_lat = CONFIG["START_NODE"]["lat"]
-    grid_spacing = CONFIG["GRID_SPACING"]
+# Step 3: Pilih variabel untuk divisualisasikan
+variables = list(combined_response.get("variables", {}).keys())
+if not variables:
+    print("No variables found in the cache file.")
+    exit(1)
 
-    visited = set()
-    queue = [(start_lon, start_lat)]
-    total_processed = 0
+print(f"Available variables: {', '.join(variables)}")
+selected_var = input("Enter variable name: ").strip()
 
-    while queue:
-        lon, lat = queue.pop(0)
-        grid_key = f"{lon}_{lat}"  # Use full precision for keys
+if selected_var not in variables:
+    print(f"Invalid variable. Please choose from {', '.join(variables)}")
+    exit(1)
 
-        if grid_key in visited:
-            print(f"Skipping already visited node: {grid_key}")
-            continue
+# Step 4: Ambil data variabel
+try:
+    variable_data = combined_response["variables"][selected_var]
+    data = np.array(variable_data["data"], dtype=np.float32)
+    latitudes = np.array(variable_data["latitude"], dtype=np.float32)
+    longitudes = np.array(variable_data["longitude"], dtype=np.float32)
+except KeyError as e:
+    print(f"Error: Key {e} not found in selected variable.")
+    exit(1)
+except ValueError as e:
+    print(f"Error: Unable to convert data to float. {e}")
+    exit(1)
 
-        visited.add(grid_key)
-        total_processed += 1
+# Debugging tipe data
+print(f"Data shape: {data.shape}, dtype: {data.dtype}")
+print(f"Latitudes shape: {latitudes.shape}, dtype: {latitudes.dtype}")
+print(f"Longitudes shape: {longitudes.shape}, dtype: {longitudes.dtype}")
 
-        # Create grid extent
-        half_spacing = grid_spacing / 2
-        grid_polygon = Polygon([
-            (lon - half_spacing, lat - half_spacing),
-            (lon + half_spacing, lat - half_spacing),
-            (lon + half_spacing, lat + half_spacing),
-            (lon - half_spacing, lat + half_spacing),
-            (lon - half_spacing, lat - half_spacing),
-        ])
+# Step 5: Bersihkan nilai non-finite
+if not np.isfinite(data).all():
+    print("Warning: Data contains non-finite values. Replacing with 0.")
+    data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # Check intersection with main geometry
-        if not main_geometry.intersects(grid_polygon):
-            print(f"Grid {grid_key} does not intersect with the geometry.")
-            continue
+# Step 6: Buat meshgrid jika perlu
+if latitudes.ndim == 1 and longitudes.ndim == 1:
+    print("cih meshgrid")
+    longitudes, latitudes = np.meshgrid(longitudes, latitudes)
 
-        # Add node to graph
-        graph["nodes"][grid_key] = {"lon": lon, "lat": lat}
-        print(f"Added node: {grid_key}")
+# Debugging dimensi
+print(f"Meshgrid shapes - Longitudes: {longitudes.shape}, Latitudes: {latitudes.shape}")
 
-        # Process neighbors
-        neighbors = [
-            (lon - grid_spacing, lat),  # Left
-            (lon + grid_spacing, lat),  # Right
-            (lon, lat - grid_spacing),  # Bottom
-            (lon, lat + grid_spacing),  # Top
-            (lon - grid_spacing, lat - grid_spacing),  # Bottom-left
-            (lon + grid_spacing, lat - grid_spacing),  # Bottom-right
-            (lon - grid_spacing, lat + grid_spacing),  # Top-left
-            (lon + grid_spacing, lat + grid_spacing),  # Top-right
-        ]
-
-        for neighbor_lon, neighbor_lat in neighbors:
-            neighbor_key = f"{neighbor_lon}_{neighbor_lat}"  # Use full precision for keys
-            distance = haversine_distance(lon, lat, neighbor_lon, neighbor_lat)
-
-            if neighbor_key not in visited:
-                queue.append((neighbor_lon, neighbor_lat))
-                print(f"Queued neighbor: {neighbor_key}")
-
-            # Add edge to graph
-            graph["edges"].append({
-                "from": grid_key,
-                "to": neighbor_key,
-                "weight": distance,
-            })
-            print(f"Added edge: {grid_key} -> {neighbor_key}, weight: {distance:.6f} km")
-
-        # Show progress for every 100 nodes processed
-        if total_processed % 100 == 0:
-            print(f"Progress: {total_processed} nodes processed...")
-
-    # Save graph to JSON
-    print("Saving graph to JSON file...")
-    with open(CONFIG["OUTPUT_FILE"], "w") as f:
-        json.dump(graph, f, indent=2)
-
-    print(f"Graph saved to {CONFIG['OUTPUT_FILE']}")
-    print(f"Total nodes: {len(graph['nodes'])}")
-    print(f"Total edges: {len(graph['edges'])}")
-
-if __name__ == "__main__":
-    create_region_graph()
+# Step 7: Visualisasi data
+plt.figure(figsize=(10, 6))
+plt.contourf(longitudes, latitudes, data, cmap='viridis')
+plt.colorbar(label=f"{variable_data.get('description', 'Value')} ({variable_data.get('units', '')})")
+plt.title(f"{selected_var} Visualization")
+plt.xlabel("Longitude")
+plt.ylabel("Latitude")
+plt.show()
