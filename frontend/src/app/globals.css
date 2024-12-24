@@ -114,7 +114,7 @@
 }
 
 .SidebarContent::-webkit-scrollbar-thumb {
-  background-color: #1E5F74; /* Warna thumb */
+  background-color: #1e5f74; /* Warna thumb */
   border-radius: 4px; /* Membuat thumb lebih bulat */
 }
 
@@ -123,7 +123,7 @@
 }
 
 .glass {
-  @apply bg-white bg-opacity-20 shadow-md border border-white border-opacity-10;
+  @apply border border-white border-opacity-10 bg-white bg-opacity-20 shadow-md;
   backdrop-filter: blur(7.2px);
   -webkit-backdrop-filter: blur(7.2px);
 }
@@ -131,4 +131,16 @@
 /* Sembunyikan copyright MapTiler */
 .ol-attribution {
   display: none !important;
+}
+
+.ol-viewport{
+  z-index: 10;
+}
+
+.canvas-overlay{
+  z-index: 5;
+}
+
+.canvas-wave{
+  z-index: 8;
 }

@@ -1,29 +1,28 @@
+// MeterGridMap.tsx
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+
+// OpenLayers
 import { Map, View, Overlay, Feature } from 'ol';
+import VectorLayer from 'ol/layer/Vector';
 import { fromLonLat } from 'ol/proj';
 import { apply } from 'ol-mapbox-style';
 import 'ol/ol.css';
+
+// Components
 import Popup from '../components/popup';
 import MapClickHandler, { PopupData } from '../components/mapClickHandler';
-import { MAPTILER_API_KEY, CONFIG } from '@/constant/map';
-import { fromLonLatExtent } from '@/lib/utils';
 import {
   createLocationMarkers,
   createMarkerLayer,
 } from '../components/mapLayer';
-import { useRouteStore } from '@/lib/GlobalState/state';
+import { updateDynamicGridLayer } from '../components/OverlayHandler';
+import { addWaveLayerToMap } from '../components/AnimateHandler';
 
-import VectorLayer from 'ol/layer/Vector';
-import { SlidersVertical } from 'lucide-react';
+// UI Components
+import { SlidersVertical, Info } from 'lucide-react';
 import { Checkbox } from '@/components/ui/checkbox';
-
-import {
-  scheduleWaveOverlayUpdate,
-  updateDynamicGridLayer,
-} from '../components/OverlayHandler';
-
 import {
   Popover,
   PopoverContent,
@@ -32,22 +31,27 @@ import {
 import { Separator } from '@/components/ui/separator';
 import Typography from '@/components/Typography';
 
+// Utilities and Constants
+import { MAPTILER_API_KEY, CONFIG } from '@/constant/map';
+import { fromLonLatExtent } from '@/lib/utils';
+import { useRouteStore } from '@/lib/GlobalState/state';
+import { debounce } from 'lodash';
+
 const MeterGridMap: React.FC = () => {
   const mapRef = useRef<HTMLDivElement | null>(null);
   const popupRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<Map | null>(null);
   const locationLayerRef = useRef<VectorLayer | null>(null);
-  const waveLayerRef = useRef<VectorLayer | null>(null);
   const clickHandlerRef = useRef<MapClickHandler | null>(null);
 
   const [loading, setLoading] = useState(false);
   const [popupData, setPopupData] = useState<PopupData | null>(null);
   const [overlayType, setOverlayType] = useState<
-    'htsgwsfc' | 'perpwsfc' | null
+    'htsgwsfc' | 'perpwsfc' | 'none'
   >('htsgwsfc');
   const [animationEnabled, setAnimationEnabled] = useState(false);
-
   const [loadingOverlayType, setLoadingOverlayType] = useState(false);
+  const [waveLoading, setWaveLoading] = useState(false);
   const locations = useRouteStore((state) => state.locations);
 
   // Initialize the map
@@ -86,7 +90,7 @@ const MeterGridMap: React.FC = () => {
       .then(() => {
         console.log('MapTiler style applied successfully');
         const mapTilerLayer = map.getLayers().item(0);
-        if (mapTilerLayer) mapTilerLayer.setZIndex(900);
+        if (mapTilerLayer) mapTilerLayer.setZIndex(900); // Ensure this layer stays at the back
       })
       .catch((error) => {
         console.error('Failed to load MapTiler style:', error);
@@ -117,27 +121,105 @@ const MeterGridMap: React.FC = () => {
     };
   }, []);
 
+  // Toggle Wave Layer
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    let cleanupWaveLayer: (() => void) | null = null; // Store cleanup function
+
+    const toggleWaveLayer = async () => {
+      if (animationEnabled) {
+        // Enable wave layer
+        setWaveLoading(true); // Start loading
+        try {
+          // Add wave layer with animation
+          cleanupWaveLayer = await addWaveLayerToMap(
+            map,
+            animationEnabled,
+            cleanupWaveLayer,
+          );
+        } catch (error) {
+          console.error('Failed to add wave layer:', error);
+        } finally {
+          setWaveLoading(false); // End loading
+        }
+      } else {
+        // Remove wave layer
+        if (cleanupWaveLayer) {
+          cleanupWaveLayer(); // Call cleanup function
+          cleanupWaveLayer = null; // Clear reference
+          console.log('Wave layer removed.');
+        }
+      }
+    };
+
+    toggleWaveLayer();
+
+    // Cleanup on component unmount
+    return () => {
+      if (cleanupWaveLayer) {
+        cleanupWaveLayer();
+        cleanupWaveLayer = null;
+      }
+    };
+  }, [animationEnabled]);
+
+  // Debounced resize handler
+  const handleResize = useCallback(
+    debounce(() => {
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.updateSize();
+      }
+    }, 300),
+    [],
+  );
+
+  // Attach resize listener
+  useEffect(() => {
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      handleResize.cancel();
+    };
+  }, [handleResize]);
+
   // Update overlay layer based on selection
   useEffect(() => {
-    if (!mapInstanceRef.current || !overlayType) return;
-    setLoadingOverlayType(true); // Start loading state
-    updateDynamicGridLayer(mapInstanceRef, waveLayerRef, overlayType).finally(
-      () => {
-        setLoadingOverlayType(false); // End loading state
-      },
-    );
-  }, [overlayType]);
+    const map = mapInstanceRef.current;
+    if (!map || !overlayType) return;
 
-  // Schedule updates if animation is enabled
-  useEffect(() => {
-    if (!animationEnabled || !mapInstanceRef.current) return;
-    const cleanup = scheduleWaveOverlayUpdate(
-      mapInstanceRef,
-      waveLayerRef,
-      overlayType!,
-    );
-    return () => cleanup();
-  }, [animationEnabled, overlayType]);
+    setLoadingOverlayType(true); // Start loading state
+
+    // Cleanup reference to manage dynamic overlay removal
+    let cleanupOverlayLayer: (() => void) | null = null;
+
+    const updateOverlay = async () => {
+      try {
+        // Update the grid layer and manage cleanup
+        cleanupOverlayLayer = await updateDynamicGridLayer(
+          map,
+          overlayType,
+          cleanupOverlayLayer, // Pass previous cleanup function
+        );
+      } catch (error) {
+        console.error('Error updating overlay layer:', error);
+      } finally {
+        setLoadingOverlayType(false); // End loading state
+      }
+    };
+
+    updateOverlay();
+
+    // Clean up overlay when component unmounts or overlayType changes
+    return () => {
+      if (cleanupOverlayLayer) {
+        cleanupOverlayLayer(); // Remove the overlay if present
+        cleanupOverlayLayer = null;
+      }
+    };
+  }, [overlayType]);
 
   // Sync markers with global locations
   useEffect(() => {
@@ -155,7 +237,7 @@ const MeterGridMap: React.FC = () => {
   return (
     <>
       {/* Map Container */}
-      <div ref={mapRef} className='h-screen w-full' />
+      <div ref={mapRef} className='relative z-[1] h-screen w-full' />
       {/* Popup Container */}
       <div ref={popupRef}>
         {popupData && (
@@ -168,8 +250,179 @@ const MeterGridMap: React.FC = () => {
           />
         )}
       </div>
+      {/* Legend Popover */}
+      <div className='absolute right-4 top-4 z-[2]'>
+        <Popover>
+          <PopoverTrigger asChild>
+            <button className='rounded-full bg-white p-2 shadow-lg'>
+              <Info color='#1f2937' size={20} />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent className='w-[240px] rounded-md bg-white p-2 shadow-lg'>
+            {(overlayType !== 'none' || animationEnabled) && (
+              <>
+                {overlayType !== 'none' && (
+                  <div>
+                    <Typography
+                      className='text-typo-normal-main'
+                      weight='bold'
+                      variant='h4'
+                    >
+                      Grid Legend
+                    </Typography>
+                    <ul className='mt-1 space-y-1'>
+                      {overlayType === 'htsgwsfc' && (
+                        <>
+                          <li className='flex items-center'>
+                            <span
+                              className='mr-2 inline-block h-4 w-4'
+                              style={{
+                                backgroundColor: 'rgba(220, 80, 50, 0.8)',
+                              }}
+                            ></span>
+                            <Typography
+                              variant='t2'
+                              className='text-typo-normal-main'
+                            >
+                              High (Dark Red - Orange Gradient)
+                            </Typography>
+                          </li>
+                          <li className='flex items-center'>
+                            <span
+                              className='mr-2 inline-block h-4 w-4'
+                              style={{
+                                backgroundColor: 'rgba(220, 150, 80, 0.8)',
+                              }}
+                            ></span>
+                            <Typography
+                              variant='t2'
+                              className='text-typo-normal-main'
+                            >
+                              Moderate (Orange - Yellow Gradient)
+                            </Typography>
+                          </li>
+                          <li className='flex items-center'>
+                            <span
+                              className='mr-2 inline-block h-4 w-4'
+                              style={{
+                                backgroundColor: 'rgba(220, 200, 120, 0.8)',
+                              }}
+                            ></span>
+                            <Typography
+                              variant='t2'
+                              className='text-typo-normal-main'
+                            >
+                              Low (Yellowish Gradient)
+                            </Typography>
+                          </li>
+                        </>
+                      )}
+                      {overlayType === 'perpwsfc' && (
+                        <>
+                          <li className='flex items-center'>
+                            <span
+                              className='mr-2 inline-block h-4 w-4'
+                              style={{
+                                backgroundColor: 'rgba(30, 120, 180, 0.8)',
+                              }}
+                            ></span>
+                            <Typography
+                              variant='t2'
+                              className='text-typo-normal-main'
+                            >
+                              High (Teal - Dark Blue Gradient)
+                            </Typography>
+                          </li>
+                          <li className='flex items-center'>
+                            <span
+                              className='mr-2 inline-block h-4 w-4'
+                              style={{
+                                backgroundColor: 'rgba(60, 160, 120, 0.8)',
+                              }}
+                            ></span>
+                            <Typography
+                              variant='t2'
+                              className='text-typo-normal-main'
+                            >
+                              Moderate (Teal - Green Gradient)
+                            </Typography>
+                          </li>
+                          <li className='flex items-center'>
+                            <span
+                              className='mr-2 inline-block h-4 w-4'
+                              style={{
+                                backgroundColor: 'rgba(120, 200, 100, 0.8)',
+                              }}
+                            ></span>
+                            <Typography
+                              variant='t2'
+                              className='text-typo-normal-main'
+                            >
+                              Low (Greenish Gradient)
+                            </Typography>
+                          </li>
+                        </>
+                      )}
+                    </ul>
+                  </div>
+                )}
+                {animationEnabled && (
+                  <div className={overlayType !== 'none' ? 'mt-3' : ''}>
+                    <Typography
+                      className='text-typo-normal-main'
+                      weight='bold'
+                      variant='h4'
+                    >
+                      Wave Legend
+                    </Typography>
+                    <ul className='mt-1 space-y-1'>
+                      <li className='flex items-center'>
+                        <span className='mr-2 inline-block h-4 w-4 bg-blue-500'></span>{' '}
+                        <Typography
+                          variant='t2'
+                          className='text-typo-normal-main'
+                        >
+                          Calm
+                        </Typography>
+                      </li>
+                      <li className='flex items-center'>
+                        <span className='mr-2 inline-block h-4 w-4 bg-orange-500'></span>{' '}
+                        <Typography
+                          variant='t2'
+                          className='text-typo-normal-main'
+                        >
+                          Moderate
+                        </Typography>
+                      </li>
+                      <li className='flex items-center'>
+                        <span className='mr-2 inline-block h-4 w-4 bg-pink-500'></span>{' '}
+                        <Typography
+                          variant='t2'
+                          className='text-typo-normal-main'
+                        >
+                          High
+                        </Typography>
+                      </li>
+                      <li className='flex items-center'>
+                        <span className='mr-2 inline-block h-4 w-4 bg-purple-500'></span>{' '}
+                        <Typography
+                          variant='t2'
+                          className='text-typo-normal-main'
+                        >
+                          Very High
+                        </Typography>
+                      </li>
+                    </ul>
+                  </div>
+                )}
+              </>
+            )}
+          </PopoverContent>
+        </Popover>
+      </div>
+
       {/* Control Panel */}
-      <div className='absolute left-1/2 top-0 flex -translate-x-1/2 items-center justify-center rounded-b-md'>
+      <div className='absolute left-1/2 top-0 z-[2] flex -translate-x-1/2 items-center justify-center rounded-b-md'>
         <Popover>
           <PopoverTrigger asChild>
             <button className='rounded-b-md bg-typo-normal-white px-3 py-2'>
@@ -195,7 +448,7 @@ const MeterGridMap: React.FC = () => {
                       id='htsgwsfc'
                       checked={overlayType === 'htsgwsfc'}
                       onCheckedChange={(checked) =>
-                        setOverlayType(checked ? 'htsgwsfc' : null)
+                        setOverlayType(checked ? 'htsgwsfc' : 'none')
                       }
                       disabled={loadingOverlayType}
                     />
@@ -211,7 +464,7 @@ const MeterGridMap: React.FC = () => {
                       id='perpwsfc'
                       checked={overlayType === 'perpwsfc'}
                       onCheckedChange={(checked) =>
-                        setOverlayType(checked ? 'perpwsfc' : null)
+                        setOverlayType(checked ? 'perpwsfc' : 'none')
                       }
                       disabled={loadingOverlayType}
                     />
@@ -239,6 +492,7 @@ const MeterGridMap: React.FC = () => {
                   <Checkbox
                     id='waves'
                     checked={animationEnabled}
+                    disabled={waveLoading}
                     onCheckedChange={(checked) =>
                       setAnimationEnabled(checked === true)
                     }

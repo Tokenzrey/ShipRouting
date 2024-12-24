@@ -101,7 +101,7 @@ export default function DataVisualizationPage() {
   return (
     <div
       className={cn(
-        'fixed bottom-0 flex w-full flex-col bg-aquaBlue transition-[max-height] duration-500 ease-in',
+        'fixed bottom-0 z-[2] flex w-full flex-col bg-aquaBlue transition-[max-height] duration-500 ease-in',
         !isExpanded ? 'max-h-0' : 'max-h-[500px]',
       )}
     >
