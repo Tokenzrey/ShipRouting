@@ -86,9 +86,6 @@ importers:
       cssnano:
         specifier: ^6.0.3
         version: 6.1.2(postcss@8.4.48)
-      d3:
-        specifier: ^7.9.0
-        version: 7.9.0
       file-saver:
         specifier: ^2.0.5
         version: 2.0.5

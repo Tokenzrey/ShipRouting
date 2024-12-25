@@ -1,90 +1,193 @@
+import numpy as np
+import igraph as ig
+from keras.api.models import load_model
+
+from sklearn.preprocessing import MinMaxScaler
+from managers import get_wave_data_response_interpolate
 import os
 import json
-import matplotlib.pyplot as plt
-import numpy as np
+from scipy.spatial import cKDTree
 
-# Step 1: Pilih file cache
-cache_folder = os.path.join(os.getcwd(), "backend", "data", "cache")
+# Load the model and scalers
+model_path = "model.h5"
+model = load_model(model_path)
 
-if not os.path.exists(cache_folder):
-    print(f"Cache folder {cache_folder} does not exist.")
-    exit(1)
+# Normalize the data
+scaler_in = MinMaxScaler()
+scaler_out = MinMaxScaler()
 
-cache_files = [f for f in os.listdir(cache_folder) if f.endswith('.json')]
-if not cache_files:
-    print(f"No cache files found in {cache_folder}.")
-    exit(1)
+# Path to cache folder
+CACHE_FOLDER = "./data/cache"
 
-print(f"Available cache files:")
-for idx, file in enumerate(cache_files):
-    print(f"[{idx}] {file}")
+# Find the latest JSON file in the cache folder
+def find_latest_wave_data():
+    files = [f for f in os.listdir(CACHE_FOLDER) if f.endswith(".json")]
+    if not files:
+        raise FileNotFoundError("No JSON wave data files found in the cache folder.")
+    latest_file = max(files, key=lambda x: os.path.getmtime(os.path.join(CACHE_FOLDER, x)))
+    return os.path.join(CACHE_FOLDER, latest_file)
 
-try:
-    selected_idx = int(input("Select a cache file index: ").strip())
-    selected_cache_file = cache_files[selected_idx]
-except (ValueError, IndexError):
-    print("Invalid cache file index.")
-    exit(1)
+# Load wave data from the latest JSON file
+def load_latest_wave_data():
+    latest_file = find_latest_wave_data()
+    print(f"Loading wave data from: {latest_file}")
+    with open(latest_file, "r") as f:
+        return json.load(f)
 
-cache_file_path = os.path.join(cache_folder, selected_cache_file)
+# Fetch wave data response and ensure cache is updated
+def fetch_and_update_wave_data(args):
+    response, status_code = get_wave_data_response_interpolate(args)
+    if status_code == 200:
+        print("Wave data updated successfully.")
+    else:
+        raise Exception(f"Failed to update wave data: {response.get('error', 'Unknown error')}")
 
-# Step 2: Load cache file JSON
-try:
-    with open(cache_file_path, 'r') as f:
-        combined_response = json.load(f)
-except Exception as e:
-    print(f"Error loading cache file: {e}")
-    exit(1)
+# Load structured graph files
+def load_graph_from_files(base_path="./GridNode", file_prefix="graph_part_", file_suffix="_structured.json"):
+    edges = []
+    weights = []
+    nodes = set()
+    bearings = []  # Store bearings for each edge
 
-# Step 3: Pilih variabel untuk divisualisasikan
-variables = list(combined_response.get("variables", {}).keys())
-if not variables:
-    print("No variables found in the cache file.")
-    exit(1)
+    for i in range(62):  # 62 files (graph_part_{0} to graph_part_{61})
+        file_path = os.path.join(base_path, f"{file_prefix}{i}{file_suffix}")
+        if not os.path.exists(file_path):
+            print(f"File not found: {file_path}")
+            continue
 
-print(f"Available variables: {', '.join(variables)}")
-selected_var = input("Enter variable name: ").strip()
+        with open(file_path, "r", encoding="utf-8") as f:
+            graph_data = json.load(f)
+            for node, data in graph_data["nodes"].items():
+                lon, lat = data["lon"], data["lat"]
+                nodes.add((lon, lat))
+                for edge in data["edges"]:
+                    target_node = tuple(map(float, edge["to"].split("_")))
+                    edges.append(((lon, lat), target_node))
+                    weights.append(edge["weight"])
+                    bearings.append(edge["bearing"])  # Add bearing information
 
-if selected_var not in variables:
-    print(f"Invalid variable. Please choose from {', '.join(variables)}")
-    exit(1)
+    return nodes, edges, weights, bearings
 
-# Step 4: Ambil data variabel
-try:
-    variable_data = combined_response["variables"][selected_var]
-    data = np.array(variable_data["data"], dtype=np.float32)
-    latitudes = np.array(variable_data["latitude"], dtype=np.float32)
-    longitudes = np.array(variable_data["longitude"], dtype=np.float32)
-except KeyError as e:
-    print(f"Error: Key {e} not found in selected variable.")
-    exit(1)
-except ValueError as e:
-    print(f"Error: Unable to convert data to float. {e}")
-    exit(1)
+# Build igraph graph from nodes and edges
+def build_igraph_from_data(nodes, edges, weights, bearings):
+    g = ig.Graph(directed=True)
 
-# Debugging tipe data
-print(f"Data shape: {data.shape}, dtype: {data.dtype}")
-print(f"Latitudes shape: {latitudes.shape}, dtype: {latitudes.dtype}")
-print(f"Longitudes shape: {longitudes.shape}, dtype: {longitudes.dtype}")
+    # Add nodes
+    node_list = list(nodes)
+    g.add_vertices(len(node_list))
+    g.vs["name"] = [f"{lon}_{lat}" for lon, lat in node_list]
+    g.vs["coords"] = node_list  # Store coordinates for lookup
 
-# Step 5: Bersihkan nilai non-finite
-if not np.isfinite(data).all():
-    print("Warning: Data contains non-finite values. Replacing with 0.")
-    data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
+    # Add edges
+    edge_list = [(node_list.index(source), node_list.index(target)) for source, target in edges]
+    g.add_edges(edge_list)
+    g.es["weight"] = weights
+    g.es["bearing"] = bearings  # Add bearing as an edge attribute
 
-# Step 6: Buat meshgrid jika perlu
-if latitudes.ndim == 1 and longitudes.ndim == 1:
-    print("cih meshgrid")
-    longitudes, latitudes = np.meshgrid(longitudes, latitudes)
+    return g
 
-# Debugging dimensi
-print(f"Meshgrid shapes - Longitudes: {longitudes.shape}, Latitudes: {latitudes.shape}")
+# Find nearest node in the graph for a given coordinate
+def find_nearest_node(graph, target_coords):
+    node_coords = np.array(graph.vs["coords"])
+    tree = cKDTree(node_coords)
+    dist, idx = tree.query(target_coords)
+    return idx
 
-# Step 7: Visualisasi data
-plt.figure(figsize=(10, 6))
-plt.contourf(longitudes, latitudes, data, cmap='viridis')
-plt.colorbar(label=f"{variable_data.get('description', 'Value')} ({variable_data.get('units', '')})")
-plt.title(f"{selected_var} Visualization")
-plt.xlabel("Longitude")
-plt.ylabel("Latitude")
-plt.show()
+# Extract wave data for a specific node
+def get_wave_data(node, wave_data):
+    latitude, longitude = node
+    for var, details in wave_data["variables"].items():
+        latitudes = np.array(details["latitude"])
+        longitudes = np.array(details["longitude"])
+        if latitude in latitudes and longitude in longitudes:
+            lat_idx = np.where(latitudes == latitude)[0][0]
+            lon_idx = np.where(longitudes == longitude)[0][0]
+            if var == "dirpwsfc":
+                wave_direction = details["data"][lat_idx][lon_idx]
+            elif var == "htsgwsfc":
+                wave_height = details["data"][lat_idx][lon_idx]
+            elif var == "perpwsfc":
+                wave_period = details["data"][lat_idx][lon_idx]
+    return wave_direction, wave_height, wave_period
+
+# Predict node status
+def predict_node_status(model, scaler_in, scaler_out, ship_speed, wave_heading, wave_height, wave_period, condition):
+    new_input = np.array([[ship_speed, wave_heading, wave_height, wave_period, condition]])
+    new_input_scaled = scaler_in.transform(new_input)
+    predicted_output_scaled = model.predict(new_input_scaled)
+    predicted_output = scaler_out.inverse_transform(predicted_output_scaled)
+    roll, heave, pitch = predicted_output[0]
+    return not (roll < 6 and pitch < 3 and heave < 0.7)
+
+# Custom Dijkstra with wave conditions
+def custom_dijkstra_with_wave_conditions(graph, start_coords, end_coords, wave_data, model, scaler_in, scaler_out, condition):
+    start_node = find_nearest_node(graph, start_coords)
+    end_node = find_nearest_node(graph, end_coords)
+    blocked_nodes = set()
+
+    def get_weight(edge):
+        source_node = graph.vs[edge.source]["coords"]
+        target_node = graph.vs[edge.target]["coords"]
+        ship_heading = edge["bearing"]  # Use bearing from edge
+
+        # Fetch wave conditions for the target node
+        wave_direction, wave_height, wave_period = get_wave_data(target_node, wave_data)
+
+        # Calculate relative heading
+        relative_heading = (wave_direction - ship_heading) % 360
+        if relative_heading > 180:
+            relative_heading = 360 - relative_heading
+
+        # Predict node status
+        is_blocked = predict_node_status(model, scaler_in, scaler_out, 8, relative_heading, wave_height, wave_period, condition)
+        if is_blocked:
+            blocked_nodes.add(target_node)
+            return float("inf")
+
+        return edge["weight"]
+
+    # Update weights dynamically
+    graph.es["weight"] = [get_weight(edge) for edge in graph.es]
+
+    # Run Dijkstra
+    path = graph.get_shortest_paths(start_node, to=end_node, weights="weight", output="vpath")
+    return path[0], blocked_nodes
+
+# Main function
+def main():
+    # Fetch and update wave data
+    args = {"min_lat": -10.0, "max_lat": 10.0, "min_lon": 100.0, "max_lon": 120.0, "interpolate": "true", "use_kdtree": "false"}
+    print("Fetching and updating wave data...")
+    fetch_and_update_wave_data(args)
+
+    # Load graph data
+    print("Loading graph data...")
+    nodes, edges, weights, bearings = load_graph_from_files()
+
+    # Build igraph graph
+    print("Building graph...")
+    graph = build_igraph_from_data(nodes, edges, weights, bearings)
+
+    # Load wave data from the latest JSON file
+    print("Loading wave data...")
+    wave_data = load_latest_wave_data()
+
+    # Example input coordinates
+    start_coords = (100.0, -5.0)  # Replace with actual starting coordinates
+    end_coords = (110.0, -6.0)    # Replace with actual ending coordinates
+    condition = 1
+
+    # Run custom Dijkstra
+    print("Running Dijkstra...")
+    path, blocked_nodes = custom_dijkstra_with_wave_conditions(graph, start_coords, end_coords, wave_data, model, scaler_in, scaler_out, condition)
+
+    if path:
+        print("Shortest Path:")
+        print(" -> ".join(graph.vs[node]["name"] for node in path))
+    else:
+        print("No path found.")
+
+    print("Blocked Nodes:", blocked_nodes)
+
+if __name__ == "__main__":
+    main()

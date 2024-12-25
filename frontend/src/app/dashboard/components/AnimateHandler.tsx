@@ -1,4 +1,5 @@
 import { Map as OlMap } from 'ol';
+import { Extent } from 'ol/extent';
 import { fromLonLat } from 'ol/proj';
 
 // Constants
@@ -91,7 +92,7 @@ const fetchWaveData = async (): Promise<WaveLayerData | null> => {
 // Get Color Based on Wave Height (High Contrast Colors)
 const getColorByHeight = (height: number): string => {
   if (height < WAVE_HEIGHT_THRESHOLDS.CALM) {
-    return 'rgba(0, 128, 255, 0.9)'; // Bright blue for calm waves
+    return 'rgba(176, 224, 230, 0.9)'; // Bright blue for calm waves
   }
   if (height < WAVE_HEIGHT_THRESHOLDS.MODERATE) {
     return 'rgba(255, 128, 0, 0.9)'; // Bright orange for moderate waves
@@ -105,28 +106,28 @@ const getColorByHeight = (height: number): string => {
 // Determine Delay Based on Wave Height
 const getDelayForHeight = (height: number): number => {
   if (height < WAVE_HEIGHT_THRESHOLDS.CALM) {
-    return 3 + Math.random() * 4.5;
+    return 2 + Math.random() * 3.5;
   }
   if (height < WAVE_HEIGHT_THRESHOLDS.MODERATE) {
-    return 2 + Math.random() * 3.5;
+    return 1.5 + Math.random() * 3;
   }
   if (height < WAVE_HEIGHT_THRESHOLDS.HIGH) {
     return 1 + Math.random() * 2.5;
   }
-  return Math.random() * 1.5;
+  return Math.random() * 1;
+};
+
+const getLineWidthByPeriod = (period: number): number => {
+  // Normalize period (example: assume min=2, max=10)
+  const minPeriod = 2;
+  const maxPeriod = 8;
+  const normalized = (period - minPeriod) / (maxPeriod - minPeriod);
+  return 1 + normalized * 3; // Line width ranges from 1 to 4
 };
 
 // Create Canvas Overlay for Animations
 const createCanvasOverlay = (map: OlMap, data: WavePoint[]) => {
   const targetElement = map.getTargetElement() as HTMLElement;
-  const existingCanvas = targetElement.querySelector(
-    '.canvas-wave',
-  ) as HTMLCanvasElement;
-
-  if (existingCanvas) {
-    existingCanvas.remove();
-  }
-
   const canvas = document.createElement('canvas');
   canvas.className = 'canvas-wave';
   canvas.style.position = 'absolute';
@@ -141,61 +142,93 @@ const createCanvasOverlay = (map: OlMap, data: WavePoint[]) => {
 
   const context = canvas.getContext('2d')!;
   let animationFrameId: number;
-  const animationDuration = 1200; // Duration of one animation loop in ms
+  const animationDuration = 1200;
   let startTime = performance.now();
+  let isInteracting = false;
+  let renderTimeout: number;
+
+  const getVisiblePoints = () => {
+    const extent = map.getView().calculateExtent(map.getSize()) as Extent;
+    const buffer = 0.5; // 50% buffer around viewport
+    const [minX, minY, maxX, maxY] = extent;
+    const width = maxX - minX;
+    const height = maxY - minY;
+
+    return data.filter((point) => {
+      const [x, y] = fromLonLat(point.coordinates);
+      return (
+        x >= minX - width * buffer &&
+        x <= maxX + width * buffer &&
+        y >= minY - height * buffer &&
+        y <= maxY + height * buffer
+      );
+    });
+  };
 
   const updateCanvas = () => {
+    if (isInteracting) return;
+
     context.clearRect(0, 0, canvas.width, canvas.height);
-
     const currentTime = performance.now();
+    const visiblePoints = getVisiblePoints();
 
-    data.forEach((point) => {
-      const delay = point.delay * 1000; // Convert delay to ms
-      const elapsedTime = (currentTime - startTime - delay) % animationDuration;
-      if (elapsedTime < 0) return; // Skip if animation is in delay period
+    visiblePoints.forEach((point) => {
+      const elapsedTime =
+        (currentTime - startTime - point.delay * 1000) % animationDuration;
+      if (elapsedTime < 0) return;
 
-      const progress = elapsedTime / animationDuration; // Value between 0 and 1
-
+      const progress = elapsedTime / animationDuration;
       const [x1, y1] = map.getPixelFromCoordinate(
         fromLonLat(point.coordinates),
       );
-      const angle = (point.direction + 90) * RAD_CONVERSION;
+      const angle = (point.direction + 90) * (Math.PI / 180);
 
-      const x2Start = x1;
-      const y2Start = y1;
-
-      const arrowLength = Math.max(
-        20,
-        Math.min(point.height * 10 * ARROW_SCALE_FACTOR, 90),
-      );
-
+      const arrowLength = Math.max(20, Math.min(point.height * 10 * 0.8, 90));
       const x2End = x1 + Math.cos(angle) * point.height * arrowLength;
       const y2End = y1 + Math.sin(angle) * point.height * arrowLength;
 
-      // Animate arrow position
-      const x2 = x2Start + progress * (x2End - x2Start);
-      const y2 = y2Start + progress * (y2End - y2Start);
+      const x2 = x1 + progress * (x2End - x1);
+      const y2 = y1 + progress * (y2End - y1);
 
       context.beginPath();
       context.moveTo(x1, y1);
       context.lineTo(x2, y2);
       context.strokeStyle = getColorByHeight(point.height);
-      context.lineWidth = BASE_LINE_WIDTH;
+      context.lineWidth = getLineWidthByPeriod(point.period);
       context.stroke();
     });
   };
 
-  const animateArrows = () => {
-    updateCanvas();
-    animationFrameId = requestAnimationFrame(animateArrows);
+  const handleInteractionStart = () => {
+    isInteracting = true;
+    canvas.style.display = 'none';
   };
 
-  map.on('moveend', updateCanvas);
+  const handleInteractionEnd = () => {
+    isInteracting = false;
+    canvas.style.display = 'block';
+    clearTimeout(renderTimeout);
+    renderTimeout = window.setTimeout(() => {
+      animateArrows();
+    }, 200);
+  };
+
+  const animateArrows = () => {
+    if (!isInteracting) {
+      updateCanvas();
+      animationFrameId = requestAnimationFrame(animateArrows);
+    }
+  };
+
+  map.on('movestart', handleInteractionStart);
+  map.on('moveend', handleInteractionEnd);
   animateArrows();
 
   return () => {
     cancelAnimationFrame(animationFrameId);
-    map.un('moveend', updateCanvas);
+    map.un('movestart', handleInteractionStart);
+    map.un('moveend', handleInteractionEnd);
+    clearTimeout(renderTimeout);
     canvas.remove();
   };
 };

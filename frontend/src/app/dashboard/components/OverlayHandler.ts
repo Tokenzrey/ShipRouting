@@ -1,4 +1,5 @@
 import { Map as OlMap } from 'ol';
+import { Extent } from 'ol/extent';
 import { fromLonLat } from 'ol/proj';
 
 // Constants
@@ -106,14 +107,12 @@ function getColorForValue(
   }
 }
 
-// Render Grid to Canvas
 function renderGridToCanvas(
   map: OlMap,
   waveData: WaveLayerData,
   overlayType: 'htsgwsfc' | 'perpwsfc',
 ) {
   const targetElement = map.getTargetElement() as HTMLElement;
-
   let canvas = targetElement.querySelector(
     '.canvas-overlay',
   ) as HTMLCanvasElement;
@@ -135,63 +134,101 @@ function renderGridToCanvas(
   const values = data.flat();
   const minValue = Math.min(...values);
   const maxValue = Math.max(...values);
-  let animationFrameId: number;
-  const updateCanvas = () => {
-    const mapSize = map.getSize();
-    if (!mapSize) return;
 
-    canvas.width = mapSize[0];
-    canvas.height = mapSize[1];
-    context.clearRect(0, 0, canvas.width, canvas.height);
+  let isInteracting = false;
+  let renderTimeout: number;
+
+  const getVisibleCells = () => {
+    const extent = map.getView().calculateExtent(map.getSize()) as Extent;
+    const [minX, minY, maxX, maxY] = extent;
+    const buffer = 0.3;
+    const width = maxX - minX;
+    const height = maxY - minY;
+
+    const visibleCells: [number, number][] = [];
 
     for (let i = 0; i < data.length - 1; i++) {
       for (let j = 0; j < data[i].length - 1; j++) {
-        const value = data[i][j];
-        if (value === null || value === undefined) continue;
-
-        // Get the corner coordinates of the cell
-        const corners = [
-          [longitude[i][j], latitude[i][j]], // Top-left
-          [longitude[i + 1][j], latitude[i + 1][j]], // Bottom-left
-          [longitude[i + 1][j + 1], latitude[i + 1][j + 1]], // Bottom-right
-          [longitude[i][j + 1], latitude[i][j + 1]], // Top-right
-        ];
-
-        // Transform coordinates to pixels
-        const screenCorners = corners.map((corner) =>
-          map.getPixelFromCoordinate(fromLonLat(corner)),
-        );
-
-        if (screenCorners.every((corner) => corner !== null)) {
-          context.beginPath();
-          context.moveTo(screenCorners[0]![0], screenCorners[0]![1]);
-          for (let k = 1; k < screenCorners.length; k++) {
-            context.lineTo(screenCorners[k]![0], screenCorners[k]![1]);
-          }
-          context.closePath();
-          context.fillStyle = getColorForValue(
-            value,
-            minValue,
-            maxValue,
-            overlayType,
-          );
-          context.fill();
+        const cellCoord = fromLonLat([longitude[i][j], latitude[i][j]]);
+        if (
+          cellCoord[0] >= minX - width * buffer &&
+          cellCoord[0] <= maxX + width * buffer &&
+          cellCoord[1] >= minY - height * buffer &&
+          cellCoord[1] <= maxY + height * buffer
+        ) {
+          visibleCells.push([i, j]);
         }
       }
     }
+
+    return visibleCells;
   };
 
-  const updateContinuous = () => {
-    updateCanvas();
-    animationFrameId = requestAnimationFrame(updateContinuous);
+  const renderVisibleGrid = () => {
+    if (!map.getSize()) return;
+
+    canvas.width = map.getSize()![0];
+    canvas.height = map.getSize()![1];
+    context.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (isInteracting) return;
+
+    const visibleCells = getVisibleCells();
+
+    visibleCells.forEach(([i, j]) => {
+      const value = data[i][j];
+      if (value === null || value === undefined) return;
+
+      const corners = [
+        [longitude[i][j], latitude[i][j]],
+        [longitude[i + 1][j], latitude[i + 1][j]],
+        [longitude[i + 1][j + 1], latitude[i + 1][j + 1]],
+        [longitude[i][j + 1], latitude[i][j + 1]],
+      ];
+
+      const screenCorners = corners.map((corner) =>
+        map.getPixelFromCoordinate(fromLonLat(corner)),
+      );
+
+      if (screenCorners.every((corner) => corner !== null)) {
+        context.beginPath();
+        context.moveTo(screenCorners[0]![0], screenCorners[0]![1]);
+        for (let k = 1; k < screenCorners.length; k++) {
+          context.lineTo(screenCorners[k]![0], screenCorners[k]![1]);
+        }
+        context.closePath();
+        context.fillStyle = getColorForValue(
+          value,
+          minValue,
+          maxValue,
+          overlayType,
+        );
+        context.fill();
+      }
+    });
   };
 
-  map.on('moveend', updateCanvas);
-  updateContinuous();
+  const handleInteractionStart = () => {
+    isInteracting = true;
+    canvas.style.display = 'none';
+  };
+
+  const handleInteractionEnd = () => {
+    isInteracting = false;
+    canvas.style.display = 'block';
+    clearTimeout(renderTimeout);
+    renderTimeout = window.setTimeout(renderVisibleGrid, 200);
+  };
+
+  map.on('movestart', handleInteractionStart);
+  map.on('moveend', handleInteractionEnd);
+
+  renderVisibleGrid();
 
   return () => {
-    cancelAnimationFrame(animationFrameId);
-    map.un('moveend', updateCanvas);
+    map.un('movestart', handleInteractionStart);
+    map.un('moveend', handleInteractionEnd);
+    clearTimeout(renderTimeout);
     canvas.remove();
   };
 }

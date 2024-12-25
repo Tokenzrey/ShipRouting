@@ -252,13 +252,13 @@ const MeterGridMap: React.FC = () => {
       </div>
       {/* Legend Popover */}
       <div className='absolute right-4 top-4 z-[2]'>
-        <Popover>
+        <Popover defaultOpen>
           <PopoverTrigger asChild>
             <button className='rounded-full bg-white p-2 shadow-lg'>
               <Info color='#1f2937' size={20} />
             </button>
           </PopoverTrigger>
-          <PopoverContent className='w-[240px] rounded-md bg-white p-2 shadow-lg'>
+          <PopoverContent className='mr-3 w-[240px] rounded-md bg-white p-2 shadow-lg'>
             {(overlayType !== 'none' || animationEnabled) && (
               <>
                 {overlayType !== 'none' && (
@@ -377,7 +377,7 @@ const MeterGridMap: React.FC = () => {
                     </Typography>
                     <ul className='mt-1 space-y-1'>
                       <li className='flex items-center'>
-                        <span className='mr-2 inline-block h-4 w-4 bg-blue-500'></span>{' '}
+                        <span className='mr-2 inline-block h-4 w-4 bg-[rgba(135,206,250,0.9)]'></span>{' '}
                         <Typography
                           variant='t2'
                           className='text-typo-normal-main'
@@ -386,7 +386,7 @@ const MeterGridMap: React.FC = () => {
                         </Typography>
                       </li>
                       <li className='flex items-center'>
-                        <span className='mr-2 inline-block h-4 w-4 bg-orange-500'></span>{' '}
+                        <span className='mr-2 inline-block h-4 w-4 bg-[rgba(255,128,0,0.9)]'></span>{' '}
                         <Typography
                           variant='t2'
                           className='text-typo-normal-main'
@@ -395,7 +395,7 @@ const MeterGridMap: React.FC = () => {
                         </Typography>
                       </li>
                       <li className='flex items-center'>
-                        <span className='mr-2 inline-block h-4 w-4 bg-pink-500'></span>{' '}
+                        <span className='mr-2 inline-block h-4 w-4 bg-[rgba(255,0,128,0.9)]'></span>{' '}
                         <Typography
                           variant='t2'
                           className='text-typo-normal-main'
@@ -404,7 +404,7 @@ const MeterGridMap: React.FC = () => {
                         </Typography>
                       </li>
                       <li className='flex items-center'>
-                        <span className='mr-2 inline-block h-4 w-4 bg-purple-500'></span>{' '}
+                        <span className='mr-2 inline-block h-4 w-4 bg-[rgba(128,0,255,0.9)]'></span>{' '}
                         <Typography
                           variant='t2'
                           className='text-typo-normal-main'
