@@ -438,7 +438,7 @@ const MeterGridMap: React.FC = () => {
                     variant='h3'
                     weight='bold'
                   >
-                    Overlay
+                    Wave Data
                   </Typography>
                   <Separator className='mt-1.5' />
                 </div>
@@ -475,34 +475,22 @@ const MeterGridMap: React.FC = () => {
                       Surface wave mean period
                     </label>
                   </div>
-                </div>
-              </div>
-              <div className='block space-y-2'>
-                <div>
-                  <Typography
-                    className='text-typo-normal-main'
-                    variant='h3'
-                    weight='bold'
-                  >
-                    Animation
-                  </Typography>
-                  <Separator className='mt-1.5' />
-                </div>
-                <div className='flex items-center space-x-2'>
-                  <Checkbox
-                    id='waves'
-                    checked={animationEnabled}
-                    disabled={waveLoading}
-                    onCheckedChange={(checked) =>
-                      setAnimationEnabled(checked === true)
-                    }
-                  />
-                  <label
-                    htmlFor='waves'
-                    className='text-sm font-medium leading-none text-gray-800'
-                  >
-                    Waves
-                  </label>
+                  <div className='flex items-center space-x-2'>
+                    <Checkbox
+                      id='waves'
+                      checked={animationEnabled}
+                      disabled={waveLoading}
+                      onCheckedChange={(checked) =>
+                        setAnimationEnabled(checked === true)
+                      }
+                    />
+                    <label
+                      htmlFor='waves'
+                      className='text-sm font-medium leading-none text-gray-800'
+                    >
+                      Wave Direction
+                    </label>
+                  </div>
                 </div>
               </div>
             </section>
