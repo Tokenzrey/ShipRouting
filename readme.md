@@ -73,7 +73,7 @@ Welcome to the Ship Routing project! This application leverages both ANN (Artifi
 
 1. Clone the repository to your local machine:
    ```bash
-   git clone https://github.com/your-repository/ship-routing.git
+   git clone https://github.com/Tokenzrey/ShipRouting.git
    ```
 2. Navigate to the project root:
    ```bash
@@ -82,7 +82,18 @@ Welcome to the Ship Routing project! This application leverages both ANN (Artifi
 
 ---
 
-### Step 3: Backend Setup
+### Step 3: Download Region Graph File
+
+1. Download the `region_graph.json` file from the following link:
+   [Download region_graph.json](https://drive.google.com/file/d/1Y83SotCpswjtzu3l_CzWw0vDa273xSF5/view?usp=sharing)
+2. Place the file in the `backend` folder:
+   ```bash
+   mv region_graph.json backend/
+   ```
+
+---
+
+### Step 4: Backend Setup
 
 1. Navigate to the backend folder:
    ```bash
@@ -107,12 +118,12 @@ Welcome to the Ship Routing project! This application leverages both ANN (Artifi
    ```
 5. Run the Flask API:
    ```bash
-   flask run
+   py app.py
    ```
 
 ---
 
-### Step 4: Frontend Setup
+### Step 5: Frontend Setup
 
 1. Navigate to the frontend folder:
    ```bash
