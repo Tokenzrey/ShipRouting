@@ -372,3 +372,4 @@ fabric.properties
 /GridNode1/*
 /GridNode/*
 /data/*/*.json
+region_graph.json

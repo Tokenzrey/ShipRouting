@@ -12,6 +12,10 @@ class Config:
     CACHE_TTL = 3600  # Cache selama 1 jam
     CHUNK_SIZE_LAT = 500
     CHUNK_SIZE_LON = 500
+    GRAPH_FILE = "./region_graph.json"
+    MODEL_PATH = "./Ship_Motion_ANN_Model.h5"
+    INPUT_SCALER = "./scaler_in.pkl"
+    OUTPUT_SCALER = "./scaler_out.pkl"
 
 # Pastikan direktori data ada
 DATA_DIR = os.path.join(os.getcwd(), 'data')

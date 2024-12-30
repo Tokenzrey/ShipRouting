@@ -15,7 +15,8 @@ from pyproj import CRS, Transformer
 
 from constants import Config
 from utils import local_file_exists_for_all, load_local_data, save_wave_data
-
+from managers.Djikstra import RouteOptimizer
+from managers.WaveDataLocator import WaveDataLocator
 # -------------------------------------------------------------------
 # Asumsikan modul eksternal "constants" dan "utils" berikut tersedia:
 # from constants import Config
@@ -342,7 +343,7 @@ def get_latest_dataset_url() -> Tuple[Any, str, str, bool]:
 # -------------------------------------------------------------------
 # Endpoint/Response generator (misal untuk Flask)
 # -------------------------------------------------------------------
-def get_wave_data_response_interpolate(args: Dict[str, Any]):
+def get_wave_data_response_interpolate(args: Dict[str, Any], wave_data_locator: WaveDataLocator, route_optimizer: RouteOptimizer):
     """
     1. Periksa bounding box & param (interpolate, use_kdtree).
     2. Dapatkan dataset URL / local file (get_latest_dataset_url).
@@ -354,14 +355,15 @@ def get_wave_data_response_interpolate(args: Dict[str, Any]):
     """
     try:
         # Param bounding box
-        min_lat = args.get("min_lat", type=float)
-        max_lat = args.get("max_lat", type=float)
-        min_lon = args.get("min_lon", type=float)
-        max_lon = args.get("max_lon", type=float)
+        # Param bounding box
+        min_lat = float(args.get("min_lat")) if args.get("min_lat") is not None else None
+        max_lat = float(args.get("max_lat")) if args.get("max_lat") is not None else None
+        min_lon = float(args.get("min_lon")) if args.get("min_lon") is not None else None
+        max_lon = float(args.get("max_lon")) if args.get("max_lon") is not None else None
 
         # Param kontrol
-        interpolate = args.get("interpolate", default="true").lower() == "true"
-        use_kdtree = args.get("use_kdtree", default="true").lower() == "true"
+        interpolate = args.get("interpolate", "true").lower() == "true"
+        use_kdtree = args.get("use_kdtree", "true").lower() == "true"
 
         # Apakah bounding box disediakan
         is_dynamic = all([
@@ -557,6 +559,15 @@ def get_wave_data_response_interpolate(args: Dict[str, Any]):
         with open(cache_path, "w") as f:
             json.dump(combined_response, f)
 
+        # -----------------------------------------------------------
+        # Perbarui WaveDataLocator dan RouteOptimizer
+        # -----------------------------------------------------------
+        logger.info("Memperbarui WaveDataLocator...")
+        new_wave_data_locator = WaveDataLocator(combined_response)
+
+        logger.info("Memperbarui RouteOptimizer...")
+        route_optimizer.update_wave_data_locator(new_wave_data_locator)
+        
         return {"success": True, "data": combined_response}, 200
 
     except Exception as e:

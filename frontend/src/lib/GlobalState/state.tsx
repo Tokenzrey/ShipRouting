@@ -10,12 +10,14 @@ interface Location {
 
 interface RouteStore {
   locations: Location[]; // List of locations (from and destination)
-  distance: number | null; // Distance in kilometers
-  duration: number | null; // Duration in hours
+  optimalDistance: number | null; // Distance for the optimal route in kilometers
+  safestDistance: number | null; // Distance for the safest route in kilometers
+  optimalDuration: number | null; // Duration for the optimal route in hours
+  safestDuration: number | null; // Duration for the safest route in hours
   loadCondition: string; // Load condition (e.g., "Light", "Medium", "Heavy")
   shipSpeed: number; // Ship speed in knots
   optimalRoute: any | null; // Replace `any` with specific type if available
-  safestRoute: any | null;
+  safestRoute: any | null; // Replace `any` with specific type if available
   locationTypeToAdd: 'from' | 'destination' | null;
 
   // Actions for locations
@@ -23,8 +25,10 @@ interface RouteStore {
   removeLocation: (index: number) => void;
 
   // Actions for route details
-  setDistance: (distance: number) => void;
-  setDuration: (duration: number) => void;
+  setOptimalDistance: (distance: number | null) => void;
+  setSafestDistance: (distance: number | null) => void;
+  setOptimalDuration: (duration: number | null) => void;
+  setSafestDuration: (duration: number | null) => void;
   setLoadCondition: (loadCondition: string) => void;
   setShipSpeed: (speed: number) => void;
   setOptimalRoute: (route: any) => void; // Replace `any` with specific type
@@ -37,8 +41,10 @@ export const useRouteStore = create(
     (set) => ({
       // Initial state
       locations: [],
-      distance: null,
-      duration: null,
+      optimalDistance: null,
+      safestDistance: null,
+      optimalDuration: null,
+      safestDuration: null,
       loadCondition: 'full_load', // Default to "Full Load"
       shipSpeed: 10, // Default to 10 knots
       optimalRoute: null,
@@ -73,8 +79,10 @@ export const useRouteStore = create(
         }),
 
       // Route details actions
-      setDistance: (distance) => set({ distance }),
-      setDuration: (duration) => set({ duration }),
+      setOptimalDistance: (distance) => set({ optimalDistance: distance }),
+      setSafestDistance: (distance) => set({ safestDistance: distance }),
+      setOptimalDuration: (duration) => set({ optimalDuration: duration }),
+      setSafestDuration: (duration) => set({ safestDuration: duration }),
       setLoadCondition: (loadCondition) => set({ loadCondition }),
       setShipSpeed: (speed) => set({ shipSpeed: speed }),
       setOptimalRoute: (route) => set({ optimalRoute: route }),
@@ -84,8 +92,10 @@ export const useRouteStore = create(
       name: 'route-store', // Key for localStorage
       partialize: (state) => ({
         locations: state.locations,
-        distance: state.distance,
-        duration: state.duration,
+        optimalDistance: state.optimalDistance,
+        safestDistance: state.safestDistance,
+        optimalDuration: state.optimalDuration,
+        safestDuration: state.safestDuration,
         loadCondition: state.loadCondition,
         shipSpeed: state.shipSpeed,
         locationTypeToAdd: state.locationTypeToAdd,
@@ -94,8 +104,10 @@ export const useRouteStore = create(
         safestRoute: null,
         addLocation: () => undefined,
         removeLocation: () => undefined,
-        setDistance: () => undefined,
-        setDuration: () => undefined,
+        setOptimalDistance: () => undefined,
+        setSafestDistance: () => undefined,
+        setOptimalDuration: () => undefined,
+        setSafestDuration: () => undefined,
         setLoadCondition: () => undefined,
         setShipSpeed: () => undefined,
         setOptimalRoute: () => undefined,

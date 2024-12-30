@@ -14,23 +14,15 @@ interface CreateGridLayerOptions {
   strokeWidth?: number; // Ketebalan garis (default: 1)
 }
 
-// Kelas untuk membuat dan mengelola layer grid
 export class GridLayer {
-  private static instance: VectorSource | null = null; // Cache untuk sumber data grid
+  private static instance: VectorSource | null = null;
 
-  /**
-   * Membuat atau mengambil layer grid dengan opsi konfigurasi.
-   * @param options Opsi konfigurasi pembuatan grid.
-   * @returns VectorLayer berisi garis lintang dan bujur.
-   */
   static create({
     spacingDegrees = 5,
     strokeColor = 'rgba(200, 200, 200, 0.5)',
     strokeWidth = 1,
   }: CreateGridLayerOptions = {}): VectorLayer<VectorSource> {
-    // Kembalikan instance yang di-cache jika sudah ada
     if (this.instance) {
-      console.log('Grid loaded from cache');
       return new VectorLayer({
         source: this.instance,
         style: new Style({
@@ -42,31 +34,26 @@ export class GridLayer {
       });
     }
 
-    // Jika cache kosong, buat instance baru
     const vectorSource = new VectorSource();
 
-    // Buat garis bujur (longitude)
     for (let lon = -180; lon <= 180; lon += spacingDegrees) {
       const line = new LineString([
         [lon, -90],
         [lon, 90],
-      ]).transform('EPSG:4326', 'EPSG:3857'); // Transformasi ke proyeksi EPSG:3857
-      vectorSource.addFeature(new Feature(line)); // Tambahkan fitur ke sumber data
+      ]).transform('EPSG:4326', 'EPSG:3857');
+      vectorSource.addFeature(new Feature(line));
     }
 
-    // Buat garis lintang (latitude)
     for (let lat = -90; lat <= 90; lat += spacingDegrees) {
       const line = new LineString([
         [-180, lat],
         [180, lat],
-      ]).transform('EPSG:4326', 'EPSG:3857'); // Transformasi ke proyeksi EPSG:3857
-      vectorSource.addFeature(new Feature(line)); // Tambahkan fitur ke sumber data
+      ]).transform('EPSG:4326', 'EPSG:3857');
+      vectorSource.addFeature(new Feature(line));
     }
 
-    // Simpan sumber data ke cache
     this.instance = vectorSource;
 
-    // Kembalikan layer grid baru
     return new VectorLayer({
       source: vectorSource,
       style: new Style({
@@ -78,20 +65,12 @@ export class GridLayer {
     });
   }
 
-  /**
-   * Menghapus cache sumber data grid.
-   * Berguna jika ingin membuat ulang grid dengan konfigurasi baru.
-   */
   static clearCache(): void {
     this.instance = null;
   }
 }
 
-/**
- * Membuat layer marker dari data markerData.
- * @returns VectorLayer berisi marker sesuai kategori.
- */
-export const createMarkerLayer = () => {
+export const createMarkerLayer = (): VectorLayer => {
   const vectorSource = new VectorSource();
 
   Object.entries(markerData).forEach(([category, markers]) => {
@@ -105,6 +84,7 @@ export const createMarkerLayer = () => {
       const iconSrc =
         category === 'LNG' ? '/images/lng.png' : '/images/gas.png';
       const colorIcon = category === 'LNG' ? '#ff0404' : '#ffac04';
+
       markerFeature.setStyle(
         new Style({
           image: new Icon({
@@ -113,10 +93,10 @@ export const createMarkerLayer = () => {
           }),
           text: new Text({
             text: name,
-            font: 'bold 14px Arial', // Font teks lebih besar
-            fill: new Fill({ color: colorIcon }), // Warna teks putih
-            stroke: new Stroke({ color: '#000', width: 3 }), // Outline hitam untuk kontras
-            offsetY: -25, // Geser teks ke atas marker
+            font: 'bold 14px Arial',
+            fill: new Fill({ color: colorIcon }),
+            stroke: new Stroke({ color: '#000', width: 3 }),
+            offsetY: -25,
           }),
         }),
       );
@@ -133,30 +113,27 @@ export const createMarkerLayer = () => {
 
 export const createLocationMarkers = (): VectorLayer => {
   const vectorSource = new VectorSource();
-
-  // Ambil lokasi `from` dan `destination` dari global state
   const { locations } = useRouteStore.getState();
 
-  // Tambahkan marker untuk setiap lokasi
   locations.forEach((location) => {
     const markerFeature = new Feature({
       geometry: new Point(fromLonLat([location.longitude, location.latitude])),
       name: location.name,
-      category: location.type, // Tipe marker
+      category: location.type,
     });
 
     markerFeature.setStyle(
       new Style({
         image: new Icon({
-          src: '/images/pin.png', // Ikon marker
+          src: '/images/pin.png',
           scale: 1.8,
         }),
         text: new Text({
           text: location.name,
-          font: 'bold 14px Arial', // Font teks
-          fill: new Fill({ color: '#00ccff' }), // Warna teks
-          stroke: new Stroke({ color: '#000', width: 3 }), // Outline hitam
-          offsetY: -25, // Geser teks ke atas marker
+          font: 'bold 14px Arial',
+          fill: new Fill({ color: '#00ccff' }),
+          stroke: new Stroke({ color: '#000', width: 3 }),
+          offsetY: -25,
         }),
       }),
     );
@@ -166,6 +143,131 @@ export const createLocationMarkers = (): VectorLayer => {
 
   return new VectorLayer({
     source: vectorSource,
-    zIndex: 1200, // Prioritas di atas layer lainnya
+    zIndex: 1200,
+  });
+};
+
+// Create Vector Sources
+const optimalSource = new VectorSource();
+const safestSource = new VectorSource();
+
+// Create Route Layers
+export const createOptimalRouteLayer = (): VectorLayer<VectorSource> => {
+  return new VectorLayer({
+    source: optimalSource,
+    style: new Style({
+      stroke: new Stroke({
+        color: '#00ff00', // Green color for optimal route
+        width: 4,
+      }),
+    }),
+    zIndex: 1500,
+  });
+};
+
+export const createSafestRouteLayer = (): VectorLayer<VectorSource> => {
+  return new VectorLayer({
+    source: safestSource,
+    style: new Style({
+      stroke: new Stroke({
+        color: '#ffcc00', // Yellow color for safest route
+        width: 4,
+      }),
+    }),
+    zIndex: 1500,
+  });
+};
+
+// Function to synchronize route layers with store
+export const syncRouteLayers = () => {
+  const store = useRouteStore.getState();
+
+  const hasFrom = store.locations.some((loc) => loc.type === 'from');
+  const hasDestination = store.locations.some(
+    (loc) => loc.type === 'destination',
+  );
+
+  // If either "from" or "destination" is missing, clear all route layers
+  if (!hasFrom || !hasDestination) {
+    optimalSource.clear();
+    safestSource.clear();
+    return;
+  }
+
+  // Handle Optimal Route
+  if (store.optimalRoute && store.optimalRoute.length > 0) {
+    const optimalCoordinates = store.optimalRoute.map(
+      (coord: [number, number]) => fromLonLat(coord),
+    );
+
+    const optimalFeature = new Feature({
+      geometry: new LineString(optimalCoordinates),
+    });
+
+    optimalSource.clear();
+    optimalSource.addFeature(optimalFeature);
+  } else {
+    optimalSource.clear();
+  }
+
+  // Handle Safest Route
+  if (store.safestRoute && store.safestRoute.length > 0) {
+    const safestCoordinates = store.safestRoute.map((coord: [number, number]) =>
+      fromLonLat(coord),
+    );
+
+    const safestFeature = new Feature({
+      geometry: new LineString(safestCoordinates),
+    });
+
+    safestSource.clear();
+    safestSource.addFeature(safestFeature);
+  } else {
+    safestSource.clear();
+  }
+};
+
+// Initialize synchronization on store changes
+export const initializeRouteLayerSync = () => {
+  useRouteStore.subscribe((state) => {
+    const hasFrom = state.locations.some((loc) => loc.type === 'from');
+    const hasDestination = state.locations.some(
+      (loc) => loc.type === 'destination',
+    );
+
+    // If either "from" or "destination" is missing, clear all route layers
+    if (!hasFrom || !hasDestination) {
+      optimalSource.clear();
+      safestSource.clear();
+      return;
+    }
+
+    // Sync Optimal Route
+    if (state.optimalRoute && state.optimalRoute.length > 0) {
+      const optimalCoordinates = state.optimalRoute.map(
+        (coord: [number, number]) => fromLonLat(coord),
+      );
+      const optimalFeature = new Feature({
+        geometry: new LineString(optimalCoordinates),
+      });
+      optimalSource.clear();
+      optimalSource.addFeature(optimalFeature);
+    } else {
+      optimalSource.clear();
+    }
+
+    // Sync Safest Route
+    if (state.safestRoute && state.safestRoute.length > 0) {
+      const safestCoordinates = state.safestRoute.map(
+        (coord: [number, number]) => fromLonLat(coord),
+      );
+      const safestFeature = new Feature({
+        geometry: new LineString(safestCoordinates),
+      });
+      safestSource.clear();
+      safestSource.addFeature(safestFeature);
+    } else {
+      safestSource.clear();
+    }
   });
 };

@@ -16,6 +16,10 @@ import MapClickHandler, { PopupData } from '../components/mapClickHandler';
 import {
   createLocationMarkers,
   createMarkerLayer,
+  createOptimalRouteLayer,
+  createSafestRouteLayer,
+  initializeRouteLayerSync,
+  syncRouteLayers,
 } from '../components/mapLayer';
 import { updateDynamicGridLayer } from '../components/OverlayHandler';
 import { addWaveLayerToMap } from '../components/AnimateHandler';
@@ -104,6 +108,10 @@ const MeterGridMap: React.FC = () => {
     locationLayerRef.current = initialLocationLayer;
     map.addLayer(initialLocationLayer);
 
+    // Add route layers to the map
+    map.addLayer(createOptimalRouteLayer());
+    map.addLayer(createSafestRouteLayer());
+
     map.on('click', (event) => {
       const features: Feature[] = [];
       map.forEachFeatureAtPixel(event.pixel, (feature) => {
@@ -121,6 +129,12 @@ const MeterGridMap: React.FC = () => {
     };
   }, []);
 
+  initializeRouteLayerSync();
+  // Optionally, call syncRouteLayers periodically or on specific events
+  useRouteStore.subscribe(() => {
+    syncRouteLayers();
+  });
+  
   // Toggle Wave Layer
   useEffect(() => {
     const map = mapInstanceRef.current;

@@ -16,43 +16,128 @@ import {
 import IconButton from './buttons/IconButton';
 import { useRouteStore } from '@/lib/GlobalState/state';
 import Button from './buttons/Button';
+import axios from 'axios';
 
 export function NavMain() {
   // Access the global state
   const {
     locations,
-    distance,
-    duration,
+    safestDistance,
+    safestDuration,
+    optimalDistance,
+    optimalDuration,
     shipSpeed,
     loadCondition,
     setLocationTypeToAdd,
     removeLocation,
-    setDistance,
-    setDuration,
-    setLoadCondition,
+    setOptimalDistance,
+    setSafestDistance,
+    setOptimalDuration,
+    setSafestDuration,
+    setOptimalRoute,
+    setSafestRoute,
     setShipSpeed,
+    setLoadCondition,
   } = useRouteStore();
 
-  const calculateDistanceAndDuration = () => {
+  const [routeCondition, setRouteCondition] = React.useState<
+    'normal' | 'safest'
+  >('normal');
+
+  // Dummy paths for demonstration
+  // Dummy paths for demonstration (if API fails)
+  const dummyOptimalRoute = [
+    [128.824254, -10.095221],
+    [128.833238, -10.086238],
+    [128.842221, -10.086238],
+    [128.851204, -10.086238],
+    [128.860187, -10.077255],
+    [128.86917, -10.068272],
+    [128.878153, -10.068272],
+    [128.887136, -10.059289],
+  ];
+
+  const dummySafestRoute = [
+    [5.824254, 4.6],
+    [128.83, 4.6],
+    [128.835, -10.085],
+    [128.84, -10.08],
+    [128.845, -10.075],
+    [128.85, -10.07],
+    [128.855, -10.065],
+    [128.86, -10.06],
+  ];
+
+  const calculateDistanceAndDuration = async (useModel: boolean) => {
     const fromLocation = locations.find((loc) => loc.type === 'from');
     const destinationLocation = locations.find(
       (loc) => loc.type === 'destination',
     );
 
-    if (fromLocation && destinationLocation) {
-      // Replace these with your actual calculation logic
-      setDistance(13436.5); // Dummy distance
-      setDuration(126); // Dummy duration in hours
-    } else {
-      setDistance(0);
-      setDuration(0);
+    // Prevent API call if either 'from' or 'destination' is missing
+    if (!fromLocation || !destinationLocation) {
+      console.warn('Both "from" and "destination" locations must be set.');
+      return;
+    }
+
+    try {
+      const response = await axios.post('http://localhost:5000/api/djikstra', {
+        start: {
+          longitude: fromLocation.longitude,
+          latitude: fromLocation.latitude,
+        },
+        end: {
+          longitude: destinationLocation.longitude,
+          latitude: destinationLocation.latitude,
+        },
+        ship_speed: shipSpeed,
+        condition: loadCondition === 'ballast' ? 1 : 0,
+        use_model: useModel,
+      });
+
+      const { data } = response.data;
+
+      if (useModel) {
+        setOptimalDistance(data.distance);
+        setOptimalDuration(data.distance / shipSpeed);
+        setOptimalRoute(data.path); // Use dummy route if API doesn't provide
+      } else {
+        setSafestDistance(data.distance);
+        setSafestDuration(data.distance / shipSpeed);
+        setSafestRoute(data.path); // Use dummy route if API doesn't provide
+      }
+    } catch (error) {
+      console.error('Error calculating route:', error);
     }
   };
 
-  // useEffect to trigger calculation on locations change
-  React.useEffect(() => {
-    calculateDistanceAndDuration();
-  }, [locations]);
+  // Handle button clicks
+  const handleNormalClick = () => {
+    setRouteCondition('normal');
+    calculateDistanceAndDuration(true); // Normal route uses model
+  };
+
+  const handleSafestClick = () => {
+    setRouteCondition('safest');
+    calculateDistanceAndDuration(false); // Safest route does not use model
+  };
+
+  // Handle location removal
+  const handleRemoveLocation = (index: number) => {
+    removeLocation(index);
+    // Clear routes and distances if either 'from' or 'destination' is removed
+    const hasFrom = locations.some((loc) => loc.type === 'from');
+    const hasDestination = locations.some((loc) => loc.type === 'destination');
+
+    if (!hasFrom || !hasDestination) {
+      setOptimalDistance(null);
+      setSafestDistance(null);
+      setOptimalDuration(null);
+      setSafestDuration(null);
+      setOptimalRoute([]);
+      setSafestRoute([]);
+    }
+  };
 
   return (
     <section className='my-2.5'>
@@ -89,7 +174,7 @@ export function NavMain() {
                 type='number'
                 value={shipSpeed || ''}
                 onChange={(e) => setShipSpeed(Number(e.target.value))}
-                className='h-5 w-12 rounded border-0 px-2 ring-0 md:text-[0.5625rem] md:leading-[0.8125rem]' // b4 variant applied here
+                className='h-5 w-12 rounded border-0 px-2 ring-0 md:text-[0.5625rem] md:leading-[0.8125rem]'
                 placeholder='Enter speed'
                 min='0'
               />
@@ -108,8 +193,6 @@ export function NavMain() {
                 onValueChange={setLoadCondition}
               >
                 <SelectTrigger className='h-5 md:text-[0.5625rem] md:leading-[0.8125rem]'>
-                  {' '}
-                  {/* b4 variant classes */}
                   <SelectValue placeholder='Select Ship Condition'>
                     {loadCondition === 'full_load' && 'Full Load'}
                     {loadCondition === 'ballast' && 'Ballast'}
@@ -171,7 +254,7 @@ export function NavMain() {
                     </Typography>
                     <IconButton
                       variant='danger'
-                      onClick={() => removeLocation(index)}
+                      onClick={() => handleRemoveLocation(index)}
                       Icon={X}
                       IconClassName='text-[12px]'
                       className='h-5 w-5'
@@ -197,7 +280,6 @@ export function NavMain() {
                           <Typography
                             className='text-typo-normal-white'
                             variant='b3'
-                            font='futura'
                             weight='medium'
                           >
                             Distance
@@ -205,10 +287,15 @@ export function NavMain() {
                           <Typography
                             className='text-typo-normal-secondary'
                             variant='b5'
-                            font='futura'
                             weight='medium'
                           >
-                            {distance ? `${distance} m` : 'Not Available'}
+                            {routeCondition === 'normal'
+                              ? optimalDistance
+                                ? `${optimalDistance} km`
+                                : 'Not Available'
+                              : safestDistance
+                                ? `${safestDistance} km`
+                                : 'Not Available'}
                           </Typography>
                         </div>
                         <Separator />
@@ -216,7 +303,6 @@ export function NavMain() {
                           <Typography
                             className='text-typo-normal-white'
                             variant='b3'
-                            font='futura'
                             weight='medium'
                           >
                             Duration
@@ -224,10 +310,15 @@ export function NavMain() {
                           <Typography
                             className='text-typo-normal-secondary'
                             variant='b5'
-                            font='futura'
                             weight='medium'
                           >
-                            {duration ? `${duration} hr` : 'Not Available'}
+                            {routeCondition === 'normal'
+                              ? optimalDuration
+                                ? `${optimalDuration.toFixed(2)} hr`
+                                : 'Not Available'
+                              : safestDuration
+                                ? `${safestDuration.toFixed(2)} hr`
+                                : 'Not Available'}
                           </Typography>
                         </div>
                       </div>
@@ -264,10 +355,16 @@ export function NavMain() {
                     appearance='dark'
                     className='rounded-sm'
                     size='small'
+                    onClick={handleNormalClick}
                   >
                     Normal
                   </Button>
-                  <Button appearance='dark' className='rounded-sm' size='small'>
+                  <Button
+                    appearance='dark'
+                    className='rounded-sm'
+                    size='small'
+                    onClick={handleSafestClick}
+                  >
                     Safest
                   </Button>
                 </div>
