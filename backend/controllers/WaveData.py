@@ -1,5 +1,8 @@
 import logging
-from flask import jsonify, request
+from typing import Dict, Any, Optional
+
+from fastapi import HTTPException
+
 from managers import get_wave_data_response_interpolate
 
 # Konfigurasi Logging
@@ -9,31 +12,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def get_wave_data(wave_data_locator, route_optimizer):
+def get_wave_data_controller(
+    route_optimizer, date: Optional[str], time_slot: Optional[str], currentdate: bool
+) -> Dict[str, Any]:
     """
     Controller untuk mendapatkan data gelombang.
     """
     try:
-        # Log parameter request
-        logger.debug(f"Menerima request dengan parameter: {request.args}")
+        response, status_code = get_wave_data_response_interpolate(
+            {},  # Masukkan parameter tambahan jika diperlukan
+            route_optimizer,
+            date_str=date,
+            time_slot=time_slot,
+            currentdate=currentdate
+        )
 
-        # Validasi input
-        if not wave_data_locator:
-            raise ValueError("WaveDataLocator tidak tersedia.")
-        if not route_optimizer:
-            raise ValueError("RouteOptimizer tidak tersedia.")
+        if not status_code == 200:
+            raise ValueError("error", "Unknown error")
 
-        # Mengambil respons dari manajer
-        response, status_code = get_wave_data_response_interpolate(request.args, wave_data_locator, route_optimizer)
-        
-        # Log hasil respon
-        logger.debug(f"Respon berhasil dikembalikan dengan status code: {status_code}")
-        return jsonify(response), status_code
-
+        # Langsung kembalikan `data` dari response
+        return {'data': response, 'success': True}
+    
     except ValueError as ve:
         logger.warning(f"Kesalahan validasi: {ve}")
-        return jsonify({"success": False, "error": str(ve)}), 400
-
+        raise HTTPException(status_code=400, detail=str(ve))
+    
     except Exception as e:
         logger.error(f"Error tidak terduga dalam controller get_wave_data: {e}")
-        return jsonify({"success": False, "error": "Internal server error."}), 500
+        raise HTTPException(status_code=500, detail="Internal server error.")

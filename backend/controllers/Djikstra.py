@@ -1,23 +1,31 @@
-from flask import request, jsonify
 import logging
-from models import DjikstraRequest, validate_djikstra_request
+from typing import Dict, Any
 
+from fastapi import HTTPException
+
+from models import DjikstraRequest, validate_djikstra_request  # Pastikan ini diadaptasi untuk FastAPI
+
+# Konfigurasi Logging
+logging.basicConfig(
+    level=logging.DEBUG,  # Ubah ke DEBUG untuk informasi detail
+    format='%(asctime)s - %(levelname)s: %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-def djikstra_route(grid_locator, route_optimizer):
+def djikstra_route_controller(grid_locator, route_optimizer, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Controller untuk menemukan rute menggunakan algoritma Dijkstra.
+    """
     try:
-        # Parse dan validasi request JSON
-        data = request.get_json()
-        logger.debug(f"Menerima request dengan parameter: {request.args}")
-        logger.debug(f"Menerima request body: {request.get_json()}")
-        if not data:
+        # Parse dan validasi request payload
+        if not payload:
             raise ValueError("Invalid JSON payload.")
         
         # Validasi request menggunakan fungsi validate_djikstra_request
-        validate_djikstra_request(data)
+        validate_djikstra_request(payload)
         
         # Inisialisasi DjikstraRequest
-        djikstra_request = DjikstraRequest(data)
+        djikstra_request = DjikstraRequest(payload)
         start = djikstra_request.get_start()
         end = djikstra_request.get_end()
         ship_speed = djikstra_request.get_shipSpeed()
@@ -33,33 +41,30 @@ def djikstra_route(grid_locator, route_optimizer):
         
         # Temukan jalur terpendek menggunakan route_optimizer
         path, distance = route_optimizer.find_shortest_path(start, end, use_model, ship_speed, condition)
-        route = [list(map(float, node.split('_'))) for node in path]
+        
         # Jika tidak ada jalur ditemukan
         if not path:
             response = {"success": False, "error": "No path found between the given coordinates."}
-            return jsonify(response), 404
+            raise HTTPException(status_code=404, detail="No path found between the given coordinates.")
         
         # Berhasil, kembalikan jalur dan jarak
         response = {
             "success": True,
             "data": {
-                "path": route,
+                "path": path,
                 "distance": distance
             }
         }
-        return jsonify(response), 200
+        return response
     
     except KeyError as e:
         logger.error(f"KeyError: {e}")
-        response = {"success": False, "error": f"Missing required field: {e}"}
-        return jsonify(response), 400
-
+        raise HTTPException(status_code=400, detail=f"Missing required field: {e}")
+    
     except ValueError as e:
         logger.error(f"ValueError: {e}")
-        response = {"success": False, "error": str(e)}
-        return jsonify(response), 400
-
+        raise HTTPException(status_code=400, detail=str(e))
+    
     except Exception as e:
         logger.error(f"Unexpected error dalam controller /djikstra: {e}")
-        response = {"success": False, "error": "Internal server error."}
-        return jsonify(response), 500
+        raise HTTPException(status_code=500, detail="Internal server error.")

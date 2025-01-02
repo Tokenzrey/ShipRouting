@@ -373,3 +373,7 @@ fabric.properties
 /GridNode/*
 /data/*/*.json
 region_graph.json
+eez.json
+region_graph.pkl
+/data/cache/*.json
+!/data/cache/e7b1e430e3a1e56d742d37d2c0c7ffd47448f51c854609f5f4df4ca7287759d6.json

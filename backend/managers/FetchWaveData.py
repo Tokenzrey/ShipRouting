@@ -16,7 +16,7 @@ from pyproj import CRS, Transformer
 from constants import Config
 from utils import local_file_exists_for_all, load_local_data, save_wave_data
 from managers.Djikstra import RouteOptimizer
-from managers.WaveDataLocator import WaveDataLocator
+from utils import WaveDataLocator
 # -------------------------------------------------------------------
 # Asumsikan modul eksternal "constants" dan "utils" berikut tersedia:
 # from constants import Config
@@ -340,10 +340,36 @@ def get_latest_dataset_url() -> Tuple[Any, str, str, bool]:
 
     raise ValueError("Tidak ada dataset valid dalam 4 hari terakhir!")
 
+def get_specific_dataset_url(date_str: str, time_slot: str) -> Tuple[Any, str, str, bool]:
+    """
+    Fetches dataset URL for a specific date and time slot.
+    
+    Args:
+    - date_str (str): Date in YYYYMMDD format.
+    - time_slot (str): Time slot string, e.g., '00z', '06z', etc.
+    
+    Returns:
+    - Tuple of (dataset_url, date_str, time_slot, all_local)
+    """
+    # Check if all files are local
+    if local_file_exists_for_all(date_str, time_slot):
+        logger.info(f"Dataset lokal lengkap: {date_str}-{time_slot}")
+        return None, date_str, time_slot, True
+
+    # If not all local, attempt to fetch from URL
+    dataset_url = f"{Config.BASE_URL}{date_str}/gfswave.global.0p16_{time_slot}z"
+    try:
+        with nc.Dataset(dataset_url) as ds:
+            logger.info(f"Dataset ditemukan di URL: {dataset_url}")
+            return dataset_url, date_str, time_slot, False
+    except Exception as e:
+        logger.error(f"Tidak tersedia: {dataset_url} => {e}")
+        raise ValueError(f"Dataset untuk {date_str} - {time_slot} tidak tersedia: {e}")
+
 # -------------------------------------------------------------------
 # Endpoint/Response generator (misal untuk Flask)
 # -------------------------------------------------------------------
-def get_wave_data_response_interpolate(args: Dict[str, Any], wave_data_locator: WaveDataLocator, route_optimizer: RouteOptimizer):
+def get_wave_data_response_interpolate(args: Dict[str, Any], route_optimizer: RouteOptimizer, date_str: str = None, time_slot: str = None, currentdate: bool = True):
     """
     1. Periksa bounding box & param (interpolate, use_kdtree).
     2. Dapatkan dataset URL / local file (get_latest_dataset_url).
@@ -374,7 +400,12 @@ def get_wave_data_response_interpolate(args: Dict[str, Any], wave_data_locator: 
         ])
 
         # Ambil dataset
-        dataset_url, date_str, time_slot, all_local = get_latest_dataset_url()
+        if currentdate:
+            # Fetch the latest dataset
+            dataset_url, date_str, time_slot, all_local = get_latest_dataset_url()
+        else:
+            # Fetch dataset based on provided date and time_slot
+            dataset_url, date_str, time_slot, all_local = get_specific_dataset_url(date_str, time_slot)
 
         # Buat cache key
         cache_dict = {
@@ -398,7 +429,7 @@ def get_wave_data_response_interpolate(args: Dict[str, Any], wave_data_locator: 
             with open(cache_path, "r") as cache_file:
                 cached_data = json.load(cache_file)
             logger.info("Data ditemukan di cache => kembalikan respons.")
-            return {"success": True, "data": cached_data}, 200
+            return cached_data, 200
 
         # Bikin response
         variables = ["htsgwsfc", "dirpwsfc", "perpwsfc"]
@@ -549,9 +580,9 @@ def get_wave_data_response_interpolate(args: Dict[str, Any], wave_data_locator: 
             if os.path.exists(cache_path):
                 with open(cache_path, "r") as cache_file:
                     cached_response = json.load(cache_file)
-                return {"success": True, "data": cached_response}, 200
+                return cached_response, 200
             else:
-                return {"success": False, "error": "Tidak ada data valid atau cache lokal yang tersedia."}, 500
+                return "Tidak ada data valid atau cache lokal yang tersedia.", 200
     
         # -----------------------------------------------------------
         # Simpan ke cache
@@ -563,13 +594,90 @@ def get_wave_data_response_interpolate(args: Dict[str, Any], wave_data_locator: 
         # Perbarui WaveDataLocator dan RouteOptimizer
         # -----------------------------------------------------------
         logger.info("Memperbarui WaveDataLocator...")
-        new_wave_data_locator = WaveDataLocator(combined_response)
+        new_wave_data_locator = WaveDataLocator(combined_response , f"{cache_key}.json")
 
         logger.info("Memperbarui RouteOptimizer...")
         route_optimizer.update_wave_data_locator(new_wave_data_locator)
         
-        return {"success": True, "data": combined_response}, 200
+        return combined_response, 200
 
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
-        return {"success": False, "error": str(e)}, 500
+        return str(e), 500
+
+def fetch_and_cache_wave_data(date_str: str, time_slot: str):
+    """
+    Fetches wave data for a specific date and time slot, processes it, and caches it locally.
+    
+    Args:
+    - date_str (str): Date in YYYYMMDD format.
+    - time_slot (str): Time slot string, e.g., '00z', '06z', etc.
+    
+    Raises:
+    - ValueError: If data fetching or processing fails.
+    """
+    try:
+        dataset_url = f"{Config.BASE_URL}{date_str}/gfswave.global.0p16_{time_slot}"
+        logger.info(f"Fetching wave data from {dataset_url}")
+        
+        # Attempt to open the dataset to ensure it's available
+        with nc.Dataset(dataset_url) as ds:
+            logger.info(f"Successfully accessed dataset at {dataset_url}")
+            
+            # Process each variable
+            variables = ["htsgwsfc", "dirpwsfc", "perpwsfc"]
+            for var in variables:
+                logger.info(f"Processing variable: {var}")
+                
+                # Read and process variable data
+                var_data_slice = read_nc_variable_optimized(
+                    dataset=ds,
+                    var_name=var,
+                    cache_path=None,  # Not using cache_path here
+                    lat_inds=None,  # Process entire dataset
+                    lon_inds=None
+                )
+                
+                # Assuming you have lat and lon arrays for the entire dataset
+                lat_nc = ds.variables["lat"][:]
+                lon_nc = ds.variables["lon"][:]
+                lon_mesh, lat_mesh = np.meshgrid(lon_nc, lat_nc)
+                
+                # Process wave data (interpolation, etc.)
+                processed_data, processed_lat, processed_lon = process_wave_data(
+                    var_data_slice,
+                    lat_mesh,
+                    lon_mesh,
+                    interpolate=True,  # Adjust as needed
+                    use_kdtree=True    # Adjust as needed
+                )
+                
+                # Prepare data to save
+                data_to_save = {
+                    "variable": var,
+                    "units": ds.variables[var].getncattr("units") if "units" in ds.variables[var].ncattrs() else "N/A",
+                    "data": processed_data.tolist(),
+                    "latitude": processed_lat.tolist(),
+                    "longitude": processed_lon.tolist(),
+                    "metadata": {
+                        "dataset_url": dataset_url,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "date": date_str,
+                        "time_slot": time_slot,
+                        "dynamic_extent": False,  # Set accordingly
+                        "extent": Config.INDONESIA_EXTENT
+                    }
+                }
+                
+                # Save processed data to cache
+                save_wave_data(data_to_save, var, date_str, time_slot)
+
+                
+                # Optionally, update the main cache or other mechanisms
+                # e.g., save_wave_data(data_to_save, var, date_str, time_slot)
+                
+        logger.info(f"Successfully fetched and cached wave data for {date_str} - {time_slot}")
+    
+    except Exception as e:
+        logger.error(f"Failed to fetch and cache wave data for {date_str} - {time_slot}: {e}", exc_info=True)
+        raise ValueError(f"Failed to fetch data for {date_str} - {time_slot}: {e}")
