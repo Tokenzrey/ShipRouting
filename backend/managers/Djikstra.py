@@ -235,8 +235,8 @@ class RouteOptimizer:
         # EdgeBatchCache single-file pkl
         self.edge_cache = EdgeBatchCache(
             os.path.join(DATA_DIR_CACHE, "edge_predictions"),
-            batch_size=50000,
-            max_memory_cache=2_000_000,  # Batas in-memory
+            batch_size=500000,
+            max_memory_cache=20_000_000,  # Batas in-memory
             compression_level=0          # No compression => fastest
         )
 
