@@ -28,19 +28,18 @@ def setup_tf_for_production():
     try:
         gpus = tf.config.list_physical_devices('GPU')
         if gpus:
-            # Menggunakan GPU pertama jika tersedia
             tf.config.set_visible_devices(gpus[0], 'GPU')
-            tf.config.experimental.set_memory_growth(gpus[0], True)  # Opsional: set memory growth
+            tf.config.experimental.set_memory_growth(gpus[0], True)
             logger.info(f"GPU mode aktif: {gpus[0]}")
         else:
-            # Cek jumlah CPU
             cpus = tf.config.list_physical_devices('CPU')
             if len(cpus) > 1:
-                logger.info("Multiple CPU detected. TensorFlow might use multi-thread automatically.")
+                logger.info("Multiple CPU detected. TF might use multi-thread automatically.")
             else:
                 logger.info("Single CPU mode.")
     except Exception as e:
         logger.warning(f"TensorFlow GPU/threads config error: {e}. Using default single-thread CPU.")
+
 
 class EdgeBatchCache:
     """
@@ -61,7 +60,7 @@ class EdgeBatchCache:
         :param cache_dir: Folder untuk file .pkl
         :param batch_size: Ukuran batch pemrosesan edge
         :param max_memory_cache: Batas jumlah entri in-memory (placeholder LRU)
-        :param compression_level: Level kompresi joblib (0 => tanpa kompresi => ngebut)
+        :param compression_level: Level kompresi joblib (0 => tanpa kompresi => cepat)
         """
         self.cache_dir = cache_dir
         os.makedirs(cache_dir, exist_ok=True)
@@ -180,6 +179,7 @@ class EdgeBatchCache:
             self._flush_to_disk(self.current_wave_data_id)
         logger.info("EdgeBatchCache finalize complete.")
 
+
 class RouteOptimizer:
     """
     RouteOptimizer siap produksi:
@@ -236,7 +236,7 @@ class RouteOptimizer:
         # EdgeBatchCache single-file pkl
         self.edge_cache = EdgeBatchCache(
             os.path.join(DATA_DIR_CACHE, "edge_predictions"),
-            batch_size=500000,
+            batch_size=100000,     # Sesuaikan batch size di sini
             max_memory_cache=20_000_000,  # Batas in-memory
             compression_level=0          # No compression => fastest
         )
@@ -324,9 +324,17 @@ class RouteOptimizer:
         return (ib+360)%360
 
     def _compute_heading(self, bearing: float, dirpwsfc: float)->float:
-        return (bearing - dirpwsfc)%360
+        """
+        Menambahkan 90 derajat untuk menyesuaikan orientasi 
+        (sesuaikan tergantung requirement).
+        """
+        return (bearing - dirpwsfc + 90) % 360
 
     def _predict_blocked(self, df: pd.DataFrame):
+        """
+        Memperkirakan blocked, roll, heave, pitch
+        Pastikan semua dikonversi ke float agar JSON-serializable
+        """
         colnames = ["ship_speed","wave_heading","wave_height","wave_period","condition"]
         df.columns = colnames
         scaled = self.input_scaler.transform(df)
@@ -476,7 +484,8 @@ class RouteOptimizer:
         Memakai chunk & EdgeBatchCache single-file pkl
         """
         self.edge_cache.set_current_wave_data_id(wave_data_id)
-        chunk_size = 100000  # misal chunk 10k
+        # Sesuaikan batch size di sini
+        chunk_size = self.edge_cache.batch_size
         results = []
 
         buffer_inputs = []
@@ -506,24 +515,26 @@ class RouteOptimizer:
                 # build input row
                 wave_data = self.wave_data_locator.get_wave_data(ed["target_coords"])
                 bearing = self._compute_bearing(ed["source_coords"], ed["target_coords"])
-                heading = self._compute_heading(bearing, wave_data.get("dirpwsfc",0.0))
+                heading = self._compute_heading(bearing, float(wave_data.get("dirpwsfc",0.0)))
 
                 row = [
                     ed["ship_speed"],
                     heading,
-                    wave_data.get("htsgwsfc",0.0),
-                    wave_data.get("perpwsfc",0.0),
+                    float(wave_data.get("htsgwsfc",0.0)),
+                    float(wave_data.get("perpwsfc",0.0)),
                     ed["condition"]
                 ]
                 buffer_inputs.append(row)
                 buffer_edges.append(ed)
 
-                if len(buffer_inputs)>=chunk_size:
+                # flush jika melebihi batch size
+                if len(buffer_inputs) >= chunk_size:
                     out = flush_chunk()
                     results.extend(out)
                     buffer_inputs.clear()
                     buffer_edges.clear()
 
+        # flush sisa
         if buffer_inputs:
             out = flush_chunk()
             results.extend(out)
@@ -541,6 +552,7 @@ class RouteOptimizer:
     )->Tuple[bool, float, float, float]:
         """
         Hanya dipakai di mode tanpa use_model (untuk sekadar prediksi).
+        Pastikan tidak ada .get() di igraph edge object
         """
         try:
             source_vertex = self.igraph_graph.vs.find(name=source_node_id)
@@ -550,13 +562,13 @@ class RouteOptimizer:
 
             wave_data = self.wave_data_locator.get_wave_data(target_coords)
             bearing   = self._compute_bearing(source_coords, target_coords)
-            heading   = self._compute_heading(bearing, wave_data.get("dirpwsfc",0.0))
+            heading   = self._compute_heading(bearing, float(wave_data.get("dirpwsfc",0.0)))
 
             df = pd.DataFrame([[
                 ship_speed,
                 heading,
-                wave_data.get("htsgwsfc",0.0),
-                wave_data.get("perpwsfc",0.0),
+                float(wave_data.get("htsgwsfc",0.0)),
+                float(wave_data.get("perpwsfc",0.0)),
                 condition
             ]])
             blocked, roll, heave, pitch = self._predict_blocked(df)
@@ -588,8 +600,8 @@ class RouteOptimizer:
             logger.info("Menggunakan dijkstra cache result from local JSON.")
             return cached
 
-        # Proses path
         wave_data_id = self._get_wave_data_identifier()
+        # Cari node index
         start_idx = self.grid_locator.find_nearest_node(*start)
         end_idx   = self.grid_locator.find_nearest_node(*end)
 
@@ -598,7 +610,7 @@ class RouteOptimizer:
             return [], 0.0
 
         if use_model:
-            # copy graph
+            # Copy graph
             gcopy = self.igraph_graph.copy()
             edges_data = []
             for e in gcopy.es:
@@ -614,10 +626,12 @@ class RouteOptimizer:
 
             logger.info(f"Batch process edges => wave_data_id={wave_data_id} ...")
             edge_res = self._batch_process_edges(edges_data, wave_data_id)
-            # update weight
+
+            # Update weight & store roll,heave,pitch
             for ed, er in zip(edges_data, edge_res):
                 if er["blocked"]:
                     gcopy.es[ed["edge_id"]]["weight"] = float('inf')
+                # Tidak pakai .get()
                 gcopy.es[ed["edge_id"]]["roll"]  = float(er["roll"])
                 gcopy.es[ed["edge_id"]]["heave"] = float(er["heave"])
                 gcopy.es[ed["edge_id"]]["pitch"] = float(er["pitch"])
@@ -633,7 +647,7 @@ class RouteOptimizer:
             for i,node_i in enumerate(path_ids):
                 vx = gcopy.vs[node_i]
                 coords = (vx["lon"], vx["lat"])
-                wave_data = {}
+                wave_data={}
                 try:
                     wave_data = self.wave_data_locator.get_wave_data(coords)
                 except Exception as e:
@@ -645,9 +659,11 @@ class RouteOptimizer:
                     nxt= gcopy.vs[path_ids[i+1]]
                     eid= gcopy.get_eid(node_i, nxt.index, error=False)
                     if eid != -1:
-                        roll = float(gcopy.es[eid].get("roll",0.0))
-                        heave= float(gcopy.es[eid].get("heave",0.0))
-                        pitch= float(gcopy.es[eid].get("pitch",0.0))
+                        # Edge attributes => pakai attribute_names
+                        roll  = float(gcopy.es[eid]["roll"]) if "roll" in gcopy.es[eid].attribute_names() else 0.0
+                        heave = float(gcopy.es[eid]["heave"]) if "heave" in gcopy.es[eid].attribute_names() else 0.0
+                        pitch = float(gcopy.es[eid]["pitch"]) if "pitch" in gcopy.es[eid].attribute_names() else 0.0
+
                     bearing= self._compute_bearing(coords,(nxt["lon"],nxt["lat"]))
                     heading= self._compute_heading(bearing, float(wave_data.get("dirpwsfc",0.0)))
 
@@ -690,7 +706,6 @@ class RouteOptimizer:
                     nxt = self.igraph_graph.vs[path_ids[i+1]]
                     bearing= self._compute_bearing(coords,(nxt["lon"],nxt["lat"]))
                     heading= self._compute_heading(bearing, float(wave_data.get("dirpwsfc",0.0)))
-                    # check blocked => tetap panggil _check_edge_blocked tapi tdk mengubah weight
                     blocked, r, h, p = self._check_edge_blocked(
                         vx["name"], nxt["name"], ship_speed, condition
                     )
