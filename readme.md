@@ -85,7 +85,7 @@ Welcome to the Ship Routing project! This application leverages both ANN (Artifi
 ### Step 3: Download Region Graph File
 
 1. Download the `region_graph.json` file from the following link:
-   [Download region_graph.json](https://drive.google.com/file/d/1-5DmvwU_vOAAr79p3Jg9DKkgiIBWhxnT/view?usp=sharing)
+   [Download region_graph.json](https://drive.google.com/file/d/1-4vjD2fLq8ajWKpmBsYY2FEhoUVYW6Or/view?usp=drive_open)
 2. Place the file in the `backend` folder:
    ```bash
    mv region_graph.pkl backend/
