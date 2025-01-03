@@ -94,7 +94,8 @@ export class MapClickHandler {
         return null;
       }
       const data = await response.json();
-      return data.success ? data.data : null;
+      console.log(data.data);
+      return data.data;
     } catch (error) {
       console.error('Error fetching wave data:', error);
       return null;
@@ -133,6 +134,8 @@ export class MapClickHandler {
             properties.geometry.flatCoordinates,
           );
 
+          const waveData = await this.fetchWaveData(markerLon, markerLat);
+          console.log('wavedata: ', waveData);
           console.log('Marker Coordinates:', { markerLon, markerLat });
           // Tambahkan lokasi ke global state
           if (locationTypeToAdd) {
@@ -149,6 +152,7 @@ export class MapClickHandler {
             placeName: name,
             latitude: markerLat,
             longitude: markerLon,
+            waveData: waveData || undefined,
           });
 
           // Tampilkan popup di lokasi marker
@@ -160,6 +164,7 @@ export class MapClickHandler {
       }
 
       const waveData = await this.fetchWaveData(lon, lat);
+      console.log('wavedata: ', waveData);
       // Jika bukan marker, lanjutkan dengan geocoding
       const placeName = await this.fetchPlaceName(lon, lat);
 

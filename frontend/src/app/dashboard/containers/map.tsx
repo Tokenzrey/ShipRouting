@@ -327,7 +327,7 @@ const MeterGridMap: React.FC = () => {
 
   useEffect(() => {
     syncRouteLayers();
-  },[optimalRoute,safestRoute]);
+  }, [optimalRoute, safestRoute, locations]);
 
   // Toggle Wave Layer
   useEffect(() => {
@@ -434,7 +434,7 @@ const MeterGridMap: React.FC = () => {
 
   // Control ship movement
   useEffect(() => {
-    const route = activeRoute === 'optimal' ? safestRoute : optimalRoute ;
+    const route = activeRoute === 'optimal' ? safestRoute : optimalRoute;
 
     // Safely handle currentAnimationIndex
     const currentIndex = currentAnimationIndex ?? route.length - 1;
@@ -468,6 +468,7 @@ const MeterGridMap: React.FC = () => {
             placeName={popupData.placeName}
             latitude={popupData.latitude}
             longitude={popupData.longitude}
+            waveData={popupData.waveData}
             loading={loading}
             onClose={() => clickHandlerRef.current?.clearPopup()}
           />

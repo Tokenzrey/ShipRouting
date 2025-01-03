@@ -30,7 +30,8 @@ def setup_tf_for_production():
         if gpus:
             # Menggunakan GPU pertama jika tersedia
             tf.config.set_visible_devices(gpus[0], 'GPU')
-            logger.info("GPU mode aktif: {}".format(gpus[0]))
+            tf.config.experimental.set_memory_growth(gpus[0], True)  # Opsional: set memory growth
+            logger.info(f"GPU mode aktif: {gpus[0]}")
         else:
             # Cek jumlah CPU
             cpus = tf.config.list_physical_devices('CPU')
@@ -40,7 +41,6 @@ def setup_tf_for_production():
                 logger.info("Single CPU mode.")
     except Exception as e:
         logger.warning(f"TensorFlow GPU/threads config error: {e}. Using default single-thread CPU.")
-
 
 class EdgeBatchCache:
     """
@@ -116,6 +116,8 @@ class EdgeBatchCache:
                     if isinstance(loaded_data, dict):
                         self.memory_cache.update(loaded_data)
                         logger.info(f"Loaded {len(loaded_data)} edge preds from {pkl_file}")
+                    else:
+                        logger.error(f"Unexpected data format in {pkl_file}")
                 except Exception as e:
                     logger.error(f"Error load pkl {pkl_file}: {e}")
         else:
@@ -153,7 +155,7 @@ class EdgeBatchCache:
         Sederhana: pop item random jika melebihi max_memory_cache.
         """
         if len(self.memory_cache) > self.max_memory_cache:
-            while len(self.memory_cache)>self.max_memory_cache:
+            while len(self.memory_cache) > self.max_memory_cache:
                 self.memory_cache.popitem()
 
     def save_batch(self, predictions: List[dict], edge_data: List[dict], wave_data_id: str):
@@ -177,7 +179,6 @@ class EdgeBatchCache:
         if self.current_wave_data_id and self._dirty:
             self._flush_to_disk(self.current_wave_data_id)
         logger.info("EdgeBatchCache finalize complete.")
-
 
 class RouteOptimizer:
     """
@@ -332,9 +333,9 @@ class RouteOptimizer:
         preds  = self.model.predict(scaled, verbose=0)
         unscaled = self.output_scaler.inverse_transform(preds)
 
-        roll  = unscaled[:,0]
-        heave = unscaled[:,1]
-        pitch = unscaled[:,2]
+        roll  = unscaled[:,0].astype(float)
+        heave = unscaled[:,1].astype(float)
+        pitch = unscaled[:,2].astype(float)
         blocked = (roll>=6)|(heave>=0.7)|(pitch>=3)
         return blocked, roll, heave, pitch
 
@@ -364,14 +365,24 @@ class RouteOptimizer:
             "ship_speed": ship_speed,
             "condition": condition,
             "path": path,
-            "distance": distance,
+            "distance": float(distance),
             "timestamp": datetime.utcnow().isoformat()+"Z"
         }
 
         with FileLock(lock_file):
             if os.path.exists(cache_file):
-                with open(cache_file, 'r') as f:
-                    cache_json = json.load(f)
+                try:
+                    with open(cache_file, 'r') as f:
+                        cache_json = json.load(f)
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to load cache file {cache_file}: {e}. Resetting cache.")
+                    cache_json = {
+                        "wave_data_id": wave_data_id,
+                        "dijkstra_results":{
+                            "with_model":[],
+                            "without_model":[]
+                        }
+                    }
             else:
                 cache_json = {
                     "wave_data_id": wave_data_id,
@@ -382,9 +393,12 @@ class RouteOptimizer:
                 }
 
             cache_json["dijkstra_results"][category].append(data)
-            with open(cache_file, 'w') as f:
-                json.dump(cache_json, f, indent=4)
-        logger.info(f"Dijkstra result saved to {cache_file} ({category}).")
+            try:
+                with open(cache_file, 'w') as f:
+                    json.dump(cache_json, f, indent=4)
+                logger.info(f"Dijkstra result saved to {cache_file} ({category}).")
+            except Exception as e:
+                logger.error(f"Failed to save dijkstra result to {cache_file}: {e}")
 
     def load_dijkstra_result(
         self,
@@ -414,9 +428,27 @@ class RouteOptimizer:
         }, sort_keys=True)
         query_key = hashlib.sha256(query_str.encode()).hexdigest()
 
-        with FileLock(lock_file):
-            with open(cache_file, 'r') as f:
-                cache_json = json.load(f)
+        try:
+            with FileLock(lock_file):
+                with open(cache_file, 'r') as f:
+                    cache_json = json.load(f)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to load cache file {cache_file}: {e}. Resetting cache.")
+            # Reset cache file
+            cache_json = {
+                "wave_data_id": wave_data_id,
+                "dijkstra_results":{
+                    "with_model":[],
+                    "without_model":[]
+                }
+            }
+            with FileLock(lock_file):
+                with open(cache_file, 'w') as f:
+                    json.dump(cache_json, f, indent=4)
+            return None
+        except Exception as e:
+            logger.error(f"Error loading dijkstra cache file {cache_file}: {e}")
+            return None
 
         category = "with_model" if use_model else "without_model"
         for item in cache_json.get("dijkstra_results",{}).get(category,[]):
@@ -433,7 +465,8 @@ class RouteOptimizer:
 
             if item_key == query_key:
                 logger.info("Found dijkstra result in local JSON cache.")
-                return (item["path"], item["distance"])
+                return (item["path"], float(item["distance"]))
+
         logger.info("No matching dijkstra result in local JSON.")
         return None
 
@@ -443,7 +476,7 @@ class RouteOptimizer:
         Memakai chunk & EdgeBatchCache single-file pkl
         """
         self.edge_cache.set_current_wave_data_id(wave_data_id)
-        chunk_size = 10000  # misal chunk 10k
+        chunk_size = 100000  # misal chunk 10k
         results = []
 
         buffer_inputs = []
@@ -527,7 +560,7 @@ class RouteOptimizer:
                 condition
             ]])
             blocked, roll, heave, pitch = self._predict_blocked(df)
-            return blocked[0], roll[0], heave[0], pitch[0]
+            return bool(blocked[0]), float(roll[0]), float(heave[0]), float(pitch[0])
         except Exception as e:
             logger.error(f"check_edge_blocked error: {e}")
             return True, 0.0, 0.0, 0.0
@@ -560,9 +593,9 @@ class RouteOptimizer:
         start_idx = self.grid_locator.find_nearest_node(*start)
         end_idx   = self.grid_locator.find_nearest_node(*end)
 
-        if start_idx<0 or end_idx<0:
+        if start_idx < 0 or end_idx < 0:
             logger.error("Invalid start or end index.")
-            return [],0.0
+            return [], 0.0
 
         if use_model:
             # copy graph
@@ -585,23 +618,22 @@ class RouteOptimizer:
             for ed, er in zip(edges_data, edge_res):
                 if er["blocked"]:
                     gcopy.es[ed["edge_id"]]["weight"] = float('inf')
-                gcopy.es[ed["edge_id"]]["roll"]  = er["roll"]
-                gcopy.es[ed["edge_id"]]["heave"] = er["heave"]
-                gcopy.es[ed["edge_id"]]["pitch"] = er["pitch"]
+                gcopy.es[ed["edge_id"]]["roll"]  = float(er["roll"])
+                gcopy.es[ed["edge_id"]]["heave"] = float(er["heave"])
+                gcopy.es[ed["edge_id"]]["pitch"] = float(er["pitch"])
 
             path_ids = gcopy.get_shortest_paths(v=start_idx, to=end_idx, weights="weight")[0]
             if not path_ids:
                 logger.warning("No path found with model.")
-                self.cache["dummy"] = ([],0.0)
-                return [],0.0
-            dist = gcopy.distances(source=start_idx, target=end_idx, weights="weight")[0][0]
+                return [], 0.0
+            dist = float(gcopy.distances(source=start_idx, target=end_idx, weights="weight")[0][0])
 
             # Bangun path
             path_data = []
             for i,node_i in enumerate(path_ids):
                 vx = gcopy.vs[node_i]
                 coords = (vx["lon"], vx["lat"])
-                wave_data={}
+                wave_data = {}
                 try:
                     wave_data = self.wave_data_locator.get_wave_data(coords)
                 except Exception as e:
@@ -609,15 +641,15 @@ class RouteOptimizer:
 
                 roll=heave=pitch=0.0
                 heading=0.0
-                if i<len(path_ids)-1:
+                if i < len(path_ids)-1:
                     nxt= gcopy.vs[path_ids[i+1]]
-                    eid= gcopy.get_eid(node_i,nxt.index, error=False)
-                    if eid!=-1:
-                        roll = gcopy.es[eid].get("roll",0.0)
-                        heave= gcopy.es[eid].get("heave",0.0)
-                        pitch= gcopy.es[eid].get("pitch",0.0)
+                    eid= gcopy.get_eid(node_i, nxt.index, error=False)
+                    if eid != -1:
+                        roll = float(gcopy.es[eid].get("roll",0.0))
+                        heave= float(gcopy.es[eid].get("heave",0.0))
+                        pitch= float(gcopy.es[eid].get("pitch",0.0))
                     bearing= self._compute_bearing(coords,(nxt["lon"],nxt["lat"]))
-                    heading= self._compute_heading(bearing, wave_data.get("dirpwsfc",0.0))
+                    heading= self._compute_heading(bearing, float(wave_data.get("dirpwsfc",0.0)))
 
                 path_data.append({
                     "node_id": vx["name"],
@@ -639,8 +671,8 @@ class RouteOptimizer:
             )[0]
             if not path_ids:
                 logger.warning("No path found (no-model).")
-                return [],0.0
-            dist = self.igraph_graph.distances(source=start_idx, target=end_idx, weights="weight")[0][0]
+                return [], 0.0
+            dist = float(self.igraph_graph.distances(source=start_idx, target=end_idx, weights="weight")[0][0])
 
             path_data=[]
             for i,node_i in enumerate(path_ids):
@@ -654,15 +686,15 @@ class RouteOptimizer:
 
                 roll=heave=pitch=0.0
                 heading=0.0
-                if i<len(path_ids)-1:
+                if i < len(path_ids)-1:
                     nxt = self.igraph_graph.vs[path_ids[i+1]]
                     bearing= self._compute_bearing(coords,(nxt["lon"],nxt["lat"]))
-                    heading= self._compute_heading(bearing,wave_data.get("dirpwsfc",0.0))
+                    heading= self._compute_heading(bearing, float(wave_data.get("dirpwsfc",0.0)))
                     # check blocked => tetap panggil _check_edge_blocked tapi tdk mengubah weight
                     blocked, r, h, p = self._check_edge_blocked(
                         vx["name"], nxt["name"], ship_speed, condition
                     )
-                    roll, heave, pitch = r, h, p
+                    roll, heave, pitch = float(r), float(h), float(p)
 
                 path_data.append({
                     "node_id": vx["name"],

@@ -23,8 +23,9 @@ const Popup: React.FC<PopupProps> = ({
   loading = false, // Status loading, default-nya false
   onClose, // Callback untuk menutup popup
 }) => {
+  console.log(waveData);
   return (
-    <div className='w-36 rounded bg-white p-2 shadow-md'>
+    <div className='w-44 rounded bg-white p-2 shadow-md'>
       {/* Tombol untuk menutup popup */}
       <button
         onClick={(e) => {
@@ -64,11 +65,11 @@ const Popup: React.FC<PopupProps> = ({
               <br />
               <strong>Wave Data:</strong>
               <br />
-              <span>Dirpwsfc: {waveData.dirpwsfc}</span>
+              <span>Dirpwsfc: {waveData.dirpwsfc.toFixed(6)}</span>
               <br />
-              <span>Htsgwsfc: {waveData.htsgwsfc}</span>
+              <span>Htsgwsfc: {waveData.htsgwsfc.toFixed(6)}</span>
               <br />
-              <span>Perpwsfc: {waveData.perpwsfc}</span>
+              <span>Perpwsfc: {waveData.perpwsfc.toFixed(6)}</span>
             </>
           )}
         </div>

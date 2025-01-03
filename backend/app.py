@@ -301,8 +301,7 @@ async def api_wave_data_by_coords(
         # Ambil data gelombang berdasarkan koordinat
         wave_data = await asyncio.to_thread(
             wave_data_locator.get_wave_data,
-            lon,
-            lat
+            (lon, lat)
         )
 
         return JSONResponse(content={"success": True, "data": wave_data})
