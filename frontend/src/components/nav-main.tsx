@@ -94,7 +94,7 @@ export function NavMain() {
             Array.isArray(point.coordinates) && point.coordinates.length === 2,
         );
 
-        if (useModel) {
+        if (!useModel) {
           setOptimalDistance(data.distance);
           setOptimalDuration(data.distance / shipSpeed);
           setOptimalRoute(validPath);
@@ -114,12 +114,12 @@ export function NavMain() {
   // Handle button clicks
   const handleNormalClick = () => {
     setRouteCondition('normal');
-    calculateDistanceAndDuration(true); // Normal route uses model
+    calculateDistanceAndDuration(false); // Normal route uses model
   };
 
   const handleSafestClick = () => {
     setRouteCondition('safest');
-    calculateDistanceAndDuration(false); // Safest route does not use mode
+    calculateDistanceAndDuration(true); // Safest route does not use mode
   };
 
   // Handle location removal

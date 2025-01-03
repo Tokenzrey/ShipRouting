@@ -280,3 +280,38 @@ async def api_djikstra_route(request: Request):
     except Exception as e:
         logger.error(f"Error in /api/djikstra: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error.")
+
+@app.get("/api/wave_data_by_coords")
+async def api_wave_data_by_coords(
+    lon: float = Query(..., description="Longitude dari koordinat yang diinginkan", ge=-180.0, le=180.0),
+    lat: float = Query(..., description="Latitude dari koordinat yang diinginkan", ge=-90.0, le=90.0)
+):
+    """
+    Endpoint untuk mendapatkan data gelombang berdasarkan koordinat longitude dan latitude.
+    """
+    if not initialization_complete.is_set():
+        logger.info("Service is still initializing. Cannot process /api/wave_data_by_coords request.")
+        raise HTTPException(status_code=503, detail="Service is initializing. Please try again later.")
+
+    if not wave_data_locator:
+        logger.info("WaveDataLocator is not available.")
+        raise HTTPException(status_code=503, detail="Service is not ready. Please try again later.")
+
+    try:
+        # Ambil data gelombang berdasarkan koordinat
+        wave_data = await asyncio.to_thread(
+            wave_data_locator.get_wave_data,
+            lon,
+            lat
+        )
+
+        return JSONResponse(content={"success": True, "data": wave_data})
+
+    except ValueError as ve:
+        logger.warning(f"No wave data found for coordinates: ({lon}, {lat}) - {ve}")
+        raise HTTPException(status_code=404, detail=str(ve))
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.error(f"Error in /api/wave_data_by_coords: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error.")

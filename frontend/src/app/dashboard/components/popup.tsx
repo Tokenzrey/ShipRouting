@@ -5,6 +5,11 @@ interface PopupProps {
   placeName?: string; // Nama tempat yang ditampilkan di popup
   latitude?: number; // Nilai latitude koordinat
   longitude?: number; // Nilai longitude koordinat
+  waveData?: {
+    dirpwsfc: number;
+    htsgwsfc: number;
+    perpwsfc: number;
+  };
   loading?: boolean; // Status loading, true jika data sedang dimuat
   onClose?: () => void; // Fungsi callback untuk menutup popup
 }
@@ -14,6 +19,7 @@ const Popup: React.FC<PopupProps> = ({
   placeName, // Nama tempat yang akan ditampilkan
   latitude, // Koordinat latitude
   longitude, // Koordinat longitude
+  waveData,
   loading = false, // Status loading, default-nya false
   onClose, // Callback untuk menutup popup
 }) => {
@@ -52,8 +58,19 @@ const Popup: React.FC<PopupProps> = ({
           <br />
           <span>Lat: {latitude?.toFixed(6)}</span> {/* Menampilkan latitude */}
           <br />
-          <span>Lon: {longitude?.toFixed(6)}</span>{' '}
-          {/* Menampilkan longitude */}
+          <span>Lon: {longitude?.toFixed(6)}</span>
+          {waveData && (
+            <>
+              <br />
+              <strong>Wave Data:</strong>
+              <br />
+              <span>Dirpwsfc: {waveData.dirpwsfc}</span>
+              <br />
+              <span>Htsgwsfc: {waveData.htsgwsfc}</span>
+              <br />
+              <span>Perpwsfc: {waveData.perpwsfc}</span>
+            </>
+          )}
         </div>
       )}
     </div>

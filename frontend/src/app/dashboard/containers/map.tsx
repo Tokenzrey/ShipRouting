@@ -24,6 +24,7 @@ import {
   initializeRouteLayerSync,
   createShipLayer,
   updateShipPosition,
+  syncRouteLayers,
 } from '../components/mapLayer';
 import { updateDynamicGridLayer } from '../components/OverlayHandler';
 import { addWaveLayerToMap } from '../components/AnimateHandler';
@@ -324,6 +325,10 @@ const MeterGridMap: React.FC = () => {
     };
   }, []);
 
+  useEffect(() => {
+    syncRouteLayers();
+  },[optimalRoute,safestRoute]);
+
   // Toggle Wave Layer
   useEffect(() => {
     const map = mapInstanceRef.current;
@@ -429,7 +434,7 @@ const MeterGridMap: React.FC = () => {
 
   // Control ship movement
   useEffect(() => {
-    const route = activeRoute === 'optimal' ? optimalRoute : safestRoute;
+    const route = activeRoute === 'optimal' ? safestRoute : optimalRoute ;
 
     // Safely handle currentAnimationIndex
     const currentIndex = currentAnimationIndex ?? route.length - 1;
@@ -437,7 +442,7 @@ const MeterGridMap: React.FC = () => {
     const nextCoord = route[currentIndex + 1]?.coordinates || undefined;
 
     updateShipPosition(currentCoord, nextCoord);
-  }, [activeRoute, currentAnimationIndex]);
+  }, [activeRoute, currentAnimationIndex, optimalRoute, safestRoute]);
 
   // Sync markers with global locations
   useEffect(() => {

@@ -15,3 +15,7 @@ APscheduler
 fastapi==0.95.2
 pydantic>=1.7.4,<3.0.0
 uvicorn
+aiofiles 
+filelock 
+tensorflow
+skckit-learn

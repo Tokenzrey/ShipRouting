@@ -16,6 +16,11 @@ export interface PopupData {
   placeName?: string; // Nama tempat (jika tersedia)
   latitude?: number; // Latitude koordinat
   longitude?: number; // Longitude koordinat
+  waveData?: {
+    dirpwsfc: number;
+    htsgwsfc: number;
+    perpwsfc: number;
+  };
 }
 
 // Kelas untuk menangani klik pada peta
@@ -73,6 +78,26 @@ export class MapClickHandler {
     } catch (error) {
       console.error('Error fetching place name:', error);
       throw new Error('Gagal mendapatkan nama tempat.');
+    }
+  }
+
+  private async fetchWaveData(
+    lon: number,
+    lat: number,
+  ): Promise<{ dirpwsfc: number; htsgwsfc: number; perpwsfc: number } | null> {
+    try {
+      const response = await fetch(
+        `http://localhost:5000/api/wave_data_by_coords?lon=${lon}&lat=${lat}`,
+      );
+      if (!response.ok) {
+        console.error('Failed to fetch wave data:', response.statusText);
+        return null;
+      }
+      const data = await response.json();
+      return data.success ? data.data : null;
+    } catch (error) {
+      console.error('Error fetching wave data:', error);
+      return null;
     }
   }
 
@@ -134,6 +159,7 @@ export class MapClickHandler {
         }
       }
 
+      const waveData = await this.fetchWaveData(lon, lat);
       // Jika bukan marker, lanjutkan dengan geocoding
       const placeName = await this.fetchPlaceName(lon, lat);
 
@@ -153,6 +179,7 @@ export class MapClickHandler {
         placeName,
         latitude: lat,
         longitude: lon,
+        waveData: waveData || undefined,
       });
 
       // Posisikan overlay pada lokasi yang diklik

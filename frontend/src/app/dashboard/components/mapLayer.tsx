@@ -320,13 +320,13 @@ export const updateShipPosition = (
 
   // Calculate rotation if the nextCoordinates are provided
   if (nextCoordinates) {
-    rotation = calculateBearing(coordinates, nextCoordinates);
+    rotation = calculateBearing(coordinates, nextCoordinates) + 90;
   }
 
   const shipStyle = new Style({
     image: new Icon({
       src: '/images/ship.png', // Path to the ship icon
-      scale: 1.5,
+      scale: 2,
       rotation: (rotation * Math.PI) / 180, // Convert degrees to radians
     }),
   });

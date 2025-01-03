@@ -1,62 +1,84 @@
-import glob
 import os
 import json
 import hashlib
 import logging
 from datetime import datetime
-from typing import List, Optional, Tuple, Dict
-import multiprocessing
-from multiprocessing import Manager, Pool
-from array import array
+from typing import Dict, List, Optional, Tuple
+
 import numpy as np
 import pandas as pd
 import igraph as ig
+import joblib
 from filelock import FileLock
 from keras.api.models import load_model
-import joblib
-from scipy.spatial import cKDTree
+# Jika Anda memakai TensorFlow:
+import tensorflow as tf
 
-from utils import GridLocator  # Pastikan modul ini diimplementasikan dengan benar
-from constants import DATA_DIR, DATA_DIR_CACHE  # Pastikan konstanta ini didefinisikan dengan benar
+from utils import GridLocator  # Pastikan modul ini diimplementasikan
+from constants import DATA_DIR, DATA_DIR_CACHE  # Pastikan konstanta ini didefinisikan
 
-# Konfigurasi logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def setup_tf_for_production():
+    """
+    Opsional: Konfigurasi TensorFlow agar memanfaatkan GPU / multithread jika ada.
+    Jika tidak ada GPU, tetap jalan single-thread CPU.
+    """
+    try:
+        gpus = tf.config.list_physical_devices('GPU')
+        if gpus:
+            # Menggunakan GPU pertama jika tersedia
+            tf.config.set_visible_devices(gpus[0], 'GPU')
+            logger.info("GPU mode aktif: {}".format(gpus[0]))
+        else:
+            # Cek jumlah CPU
+            cpus = tf.config.list_physical_devices('CPU')
+            if len(cpus) > 1:
+                logger.info("Multiple CPU detected. TensorFlow might use multi-thread automatically.")
+            else:
+                logger.info("Single CPU mode.")
+    except Exception as e:
+        logger.warning(f"TensorFlow GPU/threads config error: {e}. Using default single-thread CPU.")
+
+
 class EdgeBatchCache:
     """
-    Class untuk mengelola cache batch edge predictions.
+    Manajemen cache edge predictions satu file .pkl per wave_data_id:
+      - "batch_{wave_data_id}.pkl"
+      - In-memory dict menampung edge predictions
+      - Tulis (overwrite) file .pkl saat wave_data_id berubah, finalize(), atau melebihi limit
     """
-    def __init__(self, cache_dir: str):
+
+    def __init__(
+        self,
+        cache_dir: str,
+        batch_size: int = 50000,
+        max_memory_cache: int = 2_000_000,
+        compression_level: int = 0
+    ):
+        """
+        :param cache_dir: Folder untuk file .pkl
+        :param batch_size: Ukuran batch pemrosesan edge
+        :param max_memory_cache: Batas jumlah entri in-memory (placeholder LRU)
+        :param compression_level: Level kompresi joblib (0 => tanpa kompresi => ngebut)
+        """
         self.cache_dir = cache_dir
         os.makedirs(cache_dir, exist_ok=True)
-        self.batch_size = 1000
-        self.memory_cache = {}
-        self._load_existing_cache()
 
-    def _generate_batch_key(self, wave_data_id: str, batch_idx: int) -> str:
-        """Generate unique key untuk batch cache."""
-        return f"batch_{wave_data_id}_{batch_idx}"
+        self.batch_size = batch_size
+        self.max_memory_cache = max_memory_cache
+        self.compression_level = compression_level
 
-    def _load_existing_cache(self):
-        """Load existing cache files into memory."""
-        try:
-            cache_files = glob.glob(os.path.join(self.cache_dir, "batch_*.json"))
-            for cache_file in cache_files:
-                with open(cache_file, 'r') as f:
-                    cache_data = json.load(f)
-                    self.memory_cache.update(cache_data)
-            logger.info(f"Loaded {len(self.memory_cache)} cached edge predictions.")
-        except Exception as e:
-            logger.error(f"Error loading existing cache: {e}")
-
-    def get_cached_predictions(self, edge_data: dict, wave_data_id: str) -> Optional[dict]:
-        """Get cached predictions for an edge if available."""
-        cache_key = self._generate_edge_key(edge_data, wave_data_id)
-        return self.memory_cache.get(cache_key)
+        # In-memory untuk wave_data_id aktif
+        self.current_wave_data_id: Optional[str] = None
+        self.memory_cache: Dict[str, dict] = {}
+        self._dirty = False
 
     def _generate_edge_key(self, edge_data: dict, wave_data_id: str) -> str:
-        """Generate unique key untuk single edge prediction."""
+        """
+        Buat key unik (sha256) dari source, target, wave_data_id, ship_speed, condition.
+        """
         key_data = {
             "source": edge_data["source_coords"],
             "target": edge_data["target_coords"],
@@ -66,33 +88,104 @@ class EdgeBatchCache:
         }
         return hashlib.sha256(json.dumps(key_data, sort_keys=True).encode()).hexdigest()
 
+    def set_current_wave_data_id(self, wave_data_id: str):
+        """
+        Ganti wave_data_id aktif. 
+        - Flush yang lama jika _dirty
+        - Load file pkl wave_data_id baru kalau ada
+        """
+        if wave_data_id == self.current_wave_data_id:
+            return  # tidak berubah
+
+        # flush lama jika dirty
+        if self.current_wave_data_id and self._dirty:
+            self._flush_to_disk(self.current_wave_data_id)
+
+        self.current_wave_data_id = wave_data_id
+        self.memory_cache.clear()
+        self._dirty = False
+
+        # load pkl jika ada
+        pkl_file = os.path.join(self.cache_dir, f"batch_{wave_data_id}.pkl")
+        if os.path.exists(pkl_file):
+            lock_file = pkl_file + ".lock"
+            with FileLock(lock_file):
+                try:
+                    with open(pkl_file, 'rb') as f:
+                        loaded_data = joblib.load(f)
+                    if isinstance(loaded_data, dict):
+                        self.memory_cache.update(loaded_data)
+                        logger.info(f"Loaded {len(loaded_data)} edge preds from {pkl_file}")
+                except Exception as e:
+                    logger.error(f"Error load pkl {pkl_file}: {e}")
+        else:
+            logger.info(f"No pkl cache for wave_data_id={wave_data_id}, starting fresh.")
+
+    def _flush_to_disk(self, wave_data_id: str):
+        """
+        Overwrite file pkl "batch_{wave_data_id}.pkl" dengan memory_cache.
+        """
+        if not wave_data_id or not self._dirty:
+            return
+        pkl_file = os.path.join(self.cache_dir, f"batch_{wave_data_id}.pkl")
+        lock_file = pkl_file + ".lock"
+        with FileLock(lock_file):
+            try:
+                with open(pkl_file, 'wb') as f:
+                    joblib.dump(self.memory_cache, f, compress=self.compression_level)
+                logger.info(f"Flushed {len(self.memory_cache)} entries to {pkl_file}")
+            except Exception as e:
+                logger.error(f"Error flush pkl {pkl_file}: {e}")
+        self._dirty = False
+
+    def get_cached_predictions(self, edge_data: dict, wave_data_id: str) -> Optional[dict]:
+        """
+        Return prediksi edge in-memory jika wave_data_id cocok dan ada.
+        """
+        if wave_data_id != self.current_wave_data_id:
+            return None
+        key = self._generate_edge_key(edge_data, wave_data_id)
+        return self.memory_cache.get(key)
+
+    def _lru_cleanup(self):
+        """
+        Placeholder LRU. 
+        Sederhana: pop item random jika melebihi max_memory_cache.
+        """
+        if len(self.memory_cache) > self.max_memory_cache:
+            while len(self.memory_cache)>self.max_memory_cache:
+                self.memory_cache.popitem()
+
     def save_batch(self, predictions: List[dict], edge_data: List[dict], wave_data_id: str):
-        """Save batch predictions to cache."""
-        batch_data = {}
-        for pred, edge in zip(predictions, edge_data):
-            edge_key = self._generate_edge_key(edge, wave_data_id)
-            batch_data[edge_key] = pred
+        """
+        Simpan batch ke in-memory, tunda flush ke disk.
+        """
+        if wave_data_id != self.current_wave_data_id:
+            self.set_current_wave_data_id(wave_data_id)
 
-        # Save to memory cache
-        self.memory_cache.update(batch_data)
+        for pred, ed in zip(predictions, edge_data):
+            key = self._generate_edge_key(ed, wave_data_id)
+            self.memory_cache[key] = pred
+        self._dirty = True
 
-        # Save to disk
-        try:
-            cache_file = os.path.join(self.cache_dir, f"batch_{wave_data_id}.json")
-            with FileLock(f"{cache_file}.lock"):
-                if os.path.exists(cache_file):
-                    with open(cache_file, 'r') as f:
-                        existing_data = json.load(f)
-                    existing_data.update(batch_data)
-                    batch_data = existing_data
+        self._lru_cleanup()
 
-                with open(cache_file, 'w') as f:
-                    json.dump(batch_data, f)
-            logger.info(f"Saved batch predictions to {cache_file}.")
-        except Exception as e:
-            logger.error(f"Error saving batch cache: {e}")
+    def finalize(self):
+        """
+        Flush ke disk jika dirty.
+        """
+        if self.current_wave_data_id and self._dirty:
+            self._flush_to_disk(self.current_wave_data_id)
+        logger.info("EdgeBatchCache finalize complete.")
+
 
 class RouteOptimizer:
+    """
+    RouteOptimizer siap produksi:
+    - Single file pkl per wave_data_id untuk edge caching
+    - Optional GPU/multithread via TensorFlow kalau tersedia
+    - Memiliki load/save dijkstra result
+    """
     def __init__(
         self,
         graph_file: str,
@@ -103,15 +196,16 @@ class RouteOptimizer:
         grid_locator: GridLocator = None
     ):
         """
-        Inisialisasi RouteOptimizer dengan konfigurasi yang diperlukan.
-
-        :param graph_file: Path ke file graph JSON
-        :param wave_data_locator: Instance dari WaveDataLocator
-        :param model_path: Path ke model machine learning (.h5)
-        :param input_scaler_pkl: Path ke file pickle MinMaxScaler untuk input
-        :param output_scaler_pkl: Path ke file pickle MinMaxScaler untuk output
-        :param grid_locator: Instance dari GridLocator
+        :param graph_file: Path ke JSON graph
+        :param wave_data_locator: WaveDataLocator
+        :param model_path: Keras model path
+        :param input_scaler_pkl: scaler input path
+        :param output_scaler_pkl: scaler output path
+        :param grid_locator: GridLocator
         """
+        # Opsional: setup TF GPU/threads
+        setup_tf_for_production()
+
         self.graph_file = graph_file
         self.wave_data_locator = wave_data_locator
         self.model_path = model_path
@@ -120,680 +214,466 @@ class RouteOptimizer:
         self.grid_locator = grid_locator
 
         self.saved_graph_file = "region_graph.pkl"
-
-        # Load or build the igraph.Graph
         self.igraph_graph = self._load_or_build_graph()
 
-        # Inisialisasi cache
+        # Dijkstra in-memory cache
         self.cache: Dict[str, Tuple[List[dict], float]] = {}
 
-        # Memuat model ML dan scaler
-        logger.info(f"Memuat model ML dari {self.model_path}...")
+        logger.info(f"Load model from {self.model_path} ...")
         self.model = load_model(self.model_path, compile=False)
-        logger.info(f"Memuat input scaler dari {self.input_scaler_pkl}...")
+
+        logger.info(f"Load input scaler from {self.input_scaler_pkl} ...")
         self.input_scaler = joblib.load(self.input_scaler_pkl)
-        logger.info(f"Memuat output scaler dari {self.output_scaler_pkl}...")
+
+        logger.info(f"Load output scaler from {self.output_scaler_pkl} ...")
         self.output_scaler = joblib.load(self.output_scaler_pkl)
 
-        # Inisialisasi direktori cache Dijkstra
+        # Dijkstra cache folder
         self.dijkstra_cache_dir = os.path.join(DATA_DIR, "dijkstra")
         os.makedirs(self.dijkstra_cache_dir, exist_ok=True)
 
+        # EdgeBatchCache single-file pkl
+        self.edge_cache = EdgeBatchCache(
+            os.path.join(DATA_DIR_CACHE, "edge_predictions"),
+            batch_size=50000,
+            max_memory_cache=2_000_000,  # Batas in-memory
+            compression_level=0          # No compression => fastest
+        )
+
+    def finalize(self):
+        """
+        Dipanggil di shutdown => flush edge_cache
+        """
+        self.edge_cache.finalize()
+
+    def update_wave_data_locator(self, wave_data_locator):
+        """
+        Bila wave data berganti => flush edge cache, clear dijkstra cache
+        """
+        self.finalize()
+        self.wave_data_locator = wave_data_locator
+        self.cache.clear()
+        logger.info("WaveDataLocator updated, caches cleared.")
+
     def _get_wave_data_identifier(self) -> str:
+        wf = self.wave_data_locator.current_wave_file
+        path = os.path.join(DATA_DIR_CACHE, wf)
+        with open(path, 'rb') as f:
+            cont = f.read()
+        return hashlib.sha256(cont).hexdigest()
+
+    def _load_or_build_graph(self)->ig.Graph:
         """
-        Menghasilkan identifier unik untuk data gelombang saat ini berdasarkan isinya.
+        Load .pkl jika ada, kalau gagal, build dari JSON => simpan .pkl => return.
         """
-        wave_data_file = self.wave_data_locator.current_wave_file
-        wave_data_path = os.path.join(DATA_DIR_CACHE, wave_data_file)
-        try:
-            with open(wave_data_path, 'rb') as f:
-                wave_data_content = f.read()
-            wave_data_hash = hashlib.sha256(wave_data_content).hexdigest()
-            return wave_data_hash
-        except Exception as e:
-            logger.error(f"Gagal menghasilkan identifier data gelombang: {e}")
-            raise
+        if os.path.exists(self.saved_graph_file):
+            logger.info(f"Loading graph from {self.saved_graph_file}...")
+            try:
+                g = ig.Graph.Read_Pickle(self.saved_graph_file)
+                logger.info(f"Graph loaded: {g.vcount()} vertices, {g.ecount()} edges.")
+                return g
+            except Exception as e:
+                logger.error(f"Failed to load {self.saved_graph_file}: {e}. Rebuild from JSON...")
 
-    def _query_key(self, start, end, use_model, ship_speed, condition) -> str:
+        # Build from JSON
+        with open(self.graph_file, 'r') as f:
+            data = json.load(f)
+        logger.info(f"Building graph. nodes={len(data['nodes'])}, edges={len(data['edges'])}")
+        g = ig.Graph(n=len(data["nodes"]), directed=False)
+
+        node_ids = list(data["nodes"].keys())
+        coords = np.array([data["nodes"][nid] for nid in node_ids])
+        g.vs["name"] = node_ids
+        g.vs["lon"]  = coords[:,0]
+        g.vs["lat"]  = coords[:,1]
+
+        node_map = {nid:i for i,nid in enumerate(node_ids)}
+
+        edge_list = data["edges"]
+        tuples = []
+        w_list = []
+        b_list = []
+        for ed in edge_list:
+            s = node_map[ed["source"]]
+            t = node_map[ed["target"]]
+            w = float(ed.get("weight",1.0))
+            b = float(ed.get("bearing",0.0))
+            tuples.append((s,t))
+            w_list.append(w)
+            b_list.append(b)
+
+        g.add_edges(tuples)
+        g.es["weight"]  = w_list
+        g.es["bearing"] = b_list
+
+        g.write_pickle(self.saved_graph_file)
+        logger.info("Graph built & pickled.")
+        return g
+
+    def _compute_bearing(self, start:Tuple[float,float], end:Tuple[float,float])->float:
         """
-        Menghasilkan hash unik untuk parameter query yang diberikan.
-
-        :param start: Koordinat awal
-        :param end: Koordinat akhir
-        :param use_model: Apakah menggunakan model ML
-        :param ship_speed: Kecepatan kapal
-        :param condition: Nilai kondisi untuk prediksi model
-        :return: Hash unik sebagai string
+        Bearing start->end [0..360)
         """
-        try:
-            wave_data_hash = self._get_wave_data_identifier()
-        except Exception as e:
-            logger.error(f"Tidak dapat menghasilkan kunci query karena kegagalan identifier data gelombang: {e}")
-            raise
+        lon1, lat1 = np.radians(start)
+        lon2, lat2 = np.radians(end)
+        dlon = lon2 - lon1
+        x = np.sin(dlon)*np.cos(lat2)
+        y = np.cos(lat1)*np.sin(lat2) - np.sin(lat1)*np.cos(lat2)*np.cos(dlon)
+        ib = np.degrees(np.arctan2(x,y))
+        return (ib+360)%360
 
-        # Membuat representasi string unik dari parameter query
-        query_string = json.dumps({
-            "start": start,
-            "end": end,
-            "use_model": use_model,
-            "ship_speed": ship_speed,
-            "condition": condition,
-            "wave_data_hash": wave_data_hash
-        }, sort_keys=True)
+    def _compute_heading(self, bearing: float, dirpwsfc: float)->float:
+        return (bearing - dirpwsfc)%360
 
-        return hashlib.sha256(query_string.encode()).hexdigest()
+    def _predict_blocked(self, df: pd.DataFrame):
+        colnames = ["ship_speed","wave_heading","wave_height","wave_period","condition"]
+        df.columns = colnames
+        scaled = self.input_scaler.transform(df)
+        preds  = self.model.predict(scaled, verbose=0)
+        unscaled = self.output_scaler.inverse_transform(preds)
 
-    def save_dijkstra_result(self, start, end, use_model, ship_speed, condition, path, distance):
+        roll  = unscaled[:,0]
+        heave = unscaled[:,1]
+        pitch = unscaled[:,2]
+        blocked = (roll>=6)|(heave>=0.7)|(pitch>=3)
+        return blocked, roll, heave, pitch
+
+    def save_dijkstra_result(
+        self,
+        start: Tuple[float,float],
+        end:   Tuple[float,float],
+        use_model: bool,
+        ship_speed: float,
+        condition: int,
+        path: List[dict],
+        distance: float
+    ):
         """
-        Menyimpan hasil Dijkstra ke cache berdasarkan data gelombang.
-
-        :param start: Koordinat awal
-        :param end: Koordinat akhir
-        :param use_model: Apakah menggunakan model ML
-        :param ship_speed: Kecepatan kapal
-        :param condition: Nilai kondisi untuk prediksi model
-        :param path: Path yang ditemukan
-        :param distance: Total jarak/path weight
+        Menyimpan hasil Dijkstra ke JSON <wave_data_id>.json,
+        dengan struktur 'with_model' vs 'without_model'.
         """
-        try:
-            wave_data_id = self._get_wave_data_identifier()
-        except Exception as e:
-            logger.error(f"Tidak dapat menyimpan hasil Dijkstra karena kegagalan identifier data gelombang: {e}")
-            return
+        wave_data_id = self._get_wave_data_identifier()
+        cache_file = os.path.join(self.dijkstra_cache_dir, f"{wave_data_id}.json")
+        lock_file  = cache_file + ".lock"
+        category   = "with_model" if use_model else "without_model"
 
-        cache_filename = f"{wave_data_id}.json"
-        cache_filepath = os.path.join(self.dijkstra_cache_dir, cache_filename)
-        lock_filepath = f"{cache_filepath}.lock"
-
-        # Menyiapkan data hasil
-        result_data = {
+        data = {
             "start": list(start),
-            "end": list(end),
+            "end":   list(end),
             "use_model": use_model,
             "ship_speed": ship_speed,
             "condition": condition,
             "path": path,
             "distance": distance,
-            "timestamp": datetime.utcnow().isoformat() + 'Z'
+            "timestamp": datetime.utcnow().isoformat()+"Z"
         }
 
-        # Menggunakan file lock untuk mencegah penulisan simultan
-        lock = FileLock(lock_filepath, timeout=10)
-        try:
-            with lock:
-                if os.path.exists(cache_filepath):
-                    # Memuat cache yang sudah ada
-                    with open(cache_filepath, 'r') as f:
-                        cache_content = json.load(f)
-                else:
-                    # Menginisialisasi struktur cache baru
-                    cache_content = {
-                        "wave_data_id": wave_data_id,
-                        "dijkstra_results": []
+        with FileLock(lock_file):
+            if os.path.exists(cache_file):
+                with open(cache_file, 'r') as f:
+                    cache_json = json.load(f)
+            else:
+                cache_json = {
+                    "wave_data_id": wave_data_id,
+                    "dijkstra_results":{
+                        "with_model":[],
+                        "without_model":[]
                     }
+                }
 
-                # Menambahkan hasil baru
-                cache_content["dijkstra_results"].append(result_data)
+            cache_json["dijkstra_results"][category].append(data)
+            with open(cache_file, 'w') as f:
+                json.dump(cache_json, f, indent=4)
+        logger.info(f"Dijkstra result saved to {cache_file} ({category}).")
 
-                # Menyimpan kembali ke file JSON
-                with open(cache_filepath, 'w') as f:
-                    json.dump(cache_content, f, indent=4)
-            logger.info(f"Hasil Dijkstra disimpan ke {cache_filepath}.")
-        except Exception as e:
-            logger.error(f"Gagal menyimpan hasil Dijkstra: {e}")
-
-    def update_wave_data_locator(self, wave_data_locator):
+    def load_dijkstra_result(
+        self,
+        start: Tuple[float,float],
+        end:   Tuple[float,float],
+        use_model: bool,
+        ship_speed: float,
+        condition: int
+    ) -> Optional[Tuple[List[dict], float]]:
         """
-        Memperbarui instance WaveDataLocator dalam RouteOptimizer.
-
-        :param wave_data_locator: Instance baru dari WaveDataLocator
+        Load dijkstra result from <wave_data_id>.json
         """
-        self.wave_data_locator = wave_data_locator
-        self.cache.clear()
-        logger.info("WaveDataLocator telah diperbarui dalam RouteOptimizer dan cache dibersihkan.")
+        wave_data_id = self._get_wave_data_identifier()
+        cache_file = os.path.join(self.dijkstra_cache_dir, f"{wave_data_id}.json")
+        if not os.path.exists(cache_file):
+            logger.info(f"No dijkstra cache file for wave_data_id={wave_data_id}.")
+            return None
 
-    def _load_or_build_graph(self) -> ig.Graph:
+        lock_file = cache_file + ".lock"
+        query_str = json.dumps({
+            "start": list(start),
+            "end":   list(end),
+            "use_model": use_model,
+            "ship_speed": ship_speed,
+            "condition": condition,
+            "wave_data_id": wave_data_id
+        }, sort_keys=True)
+        query_key = hashlib.sha256(query_str.encode()).hexdigest()
+
+        with FileLock(lock_file):
+            with open(cache_file, 'r') as f:
+                cache_json = json.load(f)
+
+        category = "with_model" if use_model else "without_model"
+        for item in cache_json.get("dijkstra_results",{}).get(category,[]):
+            # Buat string item serupa
+            item_str = json.dumps({
+                "start": item["start"],
+                "end":   item["end"],
+                "use_model": item["use_model"],
+                "ship_speed": item["ship_speed"],
+                "condition": item["condition"],
+                "wave_data_id": wave_data_id
+            }, sort_keys=True)
+            item_key = hashlib.sha256(item_str.encode()).hexdigest()
+
+            if item_key == query_key:
+                logger.info("Found dijkstra result in local JSON cache.")
+                return (item["path"], item["distance"])
+        logger.info("No matching dijkstra result in local JSON.")
+        return None
+
+    def _batch_process_edges(self, edges_data: List[dict], wave_data_id: str)->List[dict]:
         """
-        Load the graph from a saved pickle file if available.
-        Otherwise, load from JSON, build the igraph.Graph, and save it.
-
-        :return: An igraph.Graph object
+        Batch process edges => blocked, roll, heave, pitch
+        Memakai chunk & EdgeBatchCache single-file pkl
         """
-        if os.path.exists(self.saved_graph_file):
-            logger.info(f"Loading graph from saved file: {self.saved_graph_file}...")
-            try:
-                g = ig.Graph.Read_Pickle(self.saved_graph_file)
-                logger.info(f"Graph loaded from {self.saved_graph_file} with {g.vcount()} vertices and {g.ecount()} edges.")
-                return g
-            except Exception as e:
-                logger.error(f"Failed to load graph from {self.saved_graph_file}: {e}")
-                logger.info("Attempting to load graph from JSON and rebuild...")
-        
-        # If saved graph doesn't exist or failed to load, build from JSON
-        logger.info(f"Loading graph from JSON file: {self.graph_file}...")
-        try:
-            with open(self.graph_file, "r") as f:
-                graph_data = json.load(f)
-            logger.info(f"Graph successfully loaded with {len(graph_data['nodes'])} nodes and {len(graph_data['edges'])} edges.\n")
+        self.edge_cache.set_current_wave_data_id(wave_data_id)
+        chunk_size = 10000  # misal chunk 10k
+        results = []
 
-            # **Debugging: Display sample nodes and edges**
-            logger.debug("Sample Nodes:")
-            sample_nodes = list(graph_data["nodes"].items())[:5]  # First 5 nodes
-            for node_id, data in sample_nodes:
-                logger.debug(f"Node ID: {node_id}")
-                logger.debug(f"Data: {data}")
-                logger.debug(f"Data Type: {type(data)}\n")
+        buffer_inputs = []
+        buffer_edges  = []
 
-            logger.debug("Sample Edges:")
-            sample_edges = graph_data["edges"][:5]  # First 5 edges
-            for edge in sample_edges:
-                logger.debug(edge)
-                logger.debug(f"Edge Type: {type(edge)}\n")
+        def flush_chunk():
+            if not buffer_inputs:
+                return []
+            df = pd.DataFrame(buffer_inputs)
+            blocked, roll, heave, pitch = self._predict_blocked(df)
+            out = []
+            for i in range(len(buffer_inputs)):
+                out.append({
+                    "blocked": bool(blocked[i]),
+                    "roll": float(roll[i]),
+                    "heave": float(heave[i]),
+                    "pitch": float(pitch[i])
+                })
+            self.edge_cache.save_batch(out, buffer_edges, wave_data_id)
+            return out
 
-            # Build igraph.Graph
-            g = self._build_igraph(graph_data)
+        for ed in edges_data:
+            cached = self.edge_cache.get_cached_predictions(ed, wave_data_id)
+            if cached:
+                results.append(cached)
+            else:
+                # build input row
+                wave_data = self.wave_data_locator.get_wave_data(ed["target_coords"])
+                bearing = self._compute_bearing(ed["source_coords"], ed["target_coords"])
+                heading = self._compute_heading(bearing, wave_data.get("dirpwsfc",0.0))
 
-            # Save the built graph for future use
-            logger.info(f"Saving built graph to {self.saved_graph_file}...")
-            g.write_pickle(self.saved_graph_file)
-            logger.info("Graph successfully saved.")
+                row = [
+                    ed["ship_speed"],
+                    heading,
+                    wave_data.get("htsgwsfc",0.0),
+                    wave_data.get("perpwsfc",0.0),
+                    ed["condition"]
+                ]
+                buffer_inputs.append(row)
+                buffer_edges.append(ed)
 
-            return g
-        except Exception as e:
-            logger.error(f"Failed to load or build graph: {e}")
-            raise
+                if len(buffer_inputs)>=chunk_size:
+                    out = flush_chunk()
+                    results.extend(out)
+                    buffer_inputs.clear()
+                    buffer_edges.clear()
 
-    def _build_igraph(self) -> ig.Graph:
+        if buffer_inputs:
+            out = flush_chunk()
+            results.extend(out)
+            buffer_inputs.clear()
+            buffer_edges.clear()
+
+        return results
+
+    def _check_edge_blocked(
+        self,
+        source_node_id: str,
+        target_node_id: str,
+        ship_speed: float,
+        condition: int
+    )->Tuple[bool, float, float, float]:
         """
-        Builds an optimized igraph Graph from the loaded graph data.
-        """
-        logger.info("Building igraph graph...")
-        
-        # Pre-allocate vertex array
-        nodes = self.graph["nodes"]
-        vertex_count = len(nodes)
-        g = ig.Graph(n=vertex_count, directed=False)
-        
-        # Process vertices in bulk
-        node_ids = list(nodes.keys())
-        coords = np.array([nodes[nid] for nid in node_ids])
-        
-        # Set vertex attributes in bulk
-        g.vs["name"] = node_ids
-        g.vs["lon"] = coords[:, 0]
-        g.vs["lat"] = coords[:, 1]
-        
-        # Create node ID mapping using dictionary comprehension
-        node_id_map = {nid: idx for idx, nid in enumerate(node_ids)}
-        
-        # Process edges in bulk using numpy arrays
-        edges = self.graph["edges"]
-        edge_count = len(edges)
-        
-        # Pre-allocate arrays
-        edge_tuples = np.empty((edge_count, 2), dtype=np.int32)
-        edge_weights = np.empty(edge_count, dtype=np.float32)
-        edge_bearings = np.empty(edge_count, dtype=np.float32)
-        
-        # Fill arrays in single pass
-        for i, edge in enumerate(edges):
-            edge_tuples[i] = [node_id_map[edge["source"]], node_id_map[edge["target"]]]
-            edge_weights[i] = float(edge.get("weight", 1.0))
-            edge_bearings[i] = float(edge.get("bearing", 0.0))
-        
-        # Add edges and attributes in bulk
-        g.add_edges(edge_tuples)
-        g.es["weight"] = edge_weights
-        g.es["bearing"] = edge_bearings
-        
-        print(f"Graph built with {g.vcount()} vertices and {g.ecount()} edges.")
-        return g
-
-    def _compute_bearing(self, start: Tuple[float, float], end: Tuple[float, float]) -> float:
-        """
-        Menghitung bearing dari koordinat start ke koordinat end.
-
-        :param start: (lon, lat)
-        :param end: (lon, lat)
-        :return: Bearing dalam derajat
-        """
-        lon1, lat1 = map(np.radians, start)
-        lon2, lat2 = map(np.radians, end)
-
-        dlon = lon2 - lon1
-
-        x = np.sin(dlon) * np.cos(lat2)
-        y = np.cos(lat1) * np.sin(lat2) - (np.sin(lat1) * np.cos(lat2) * np.cos(dlon))
-
-        initial_bearing = np.degrees(np.arctan2(x, y))
-        bearing = (initial_bearing + 360) % 360
-
-        return bearing
-
-    def _compute_heading(self, adjusted_bearing: float, dirpwfsc: float) -> float:
-        """
-        Menghitung heading relatif berdasarkan bearing yang disesuaikan dan arah gelombang.
-
-        :param adjusted_bearing: Bearing dari source ke target node dalam derajat.
-        :param dirpwfsc: Arah gelombang dalam derajat
-        :return: Heading relatif dalam derajat
-        """
-        heading = (adjusted_bearing - dirpwfsc) % 360
-        return heading
-
-    def _predict_blocked(self, inputs: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Memprediksi apakah edges diblokir berdasarkan model ML dan mengembalikan metrik gelombang terkait.
-
-        :param inputs: DataFrame yang berisi fitur input batch untuk model
-        :return: Tuple yang berisi:
-                 - Array boolean yang menunjukkan apakah setiap input diblokir
-                 - Array nilai Roll
-                 - Array nilai Heave
-                 - Array nilai Pitch
-        """
-        # Memastikan DataFrame memiliki nama kolom yang benar
-        feature_names = ['ship_speed', 'wave_heading', 'wave_height', 'wave_period', 'condition']
-        inputs.columns = feature_names
-
-        try:
-            # Menyaring fitur input
-            scaled_inputs = self.input_scaler.transform(inputs)
-
-            # Melakukan prediksi menggunakan model
-            predictions = self.model.predict(scaled_inputs, verbose=0)
-
-            # Membalikkan skala prediksi untuk mendapatkan metrik gelombang sebenarnya
-            unscaled_predictions = self.output_scaler.inverse_transform(predictions)
-
-            # Mengekstrak Roll, Heave, dan Pitch dari prediksi
-            roll = unscaled_predictions[:, 0]
-            heave = unscaled_predictions[:, 1]
-            pitch = unscaled_predictions[:, 2]
-
-            # Mendefinisikan kondisi pemblokiran
-            blocked_mask = (roll >= 6) | (pitch >= 3) | (heave >= 0.7)
-
-            return blocked_mask, roll, heave, pitch
-        except Exception as e:
-            logger.error(f"Gagal memprediksi status blokir: {e}")
-            raise
-
-    def _check_edge_blocked(self, source_node_id: str, target_node_id: str, ship_speed: float, condition: int) -> Tuple[bool, float, float, float]:
-        """
-        Memeriksa apakah sebuah edge diblokir berdasarkan kondisi gelombang dan heading relatif.
-
-        Args:
-            source_node_id (str): ID node sumber
-            target_node_id (str): ID node target
-            ship_speed (float): Kecepatan kapal dalam knot
-            condition (int): Nilai kondisi untuk prediksi model
-
-        Returns:
-            tuple: (is_blocked, roll, heave, pitch)
+        Hanya dipakai di mode tanpa use_model (untuk sekadar prediksi).
         """
         try:
-            # Mendapatkan koordinat untuk node sumber dan target
             source_vertex = self.igraph_graph.vs.find(name=source_node_id)
             target_vertex = self.igraph_graph.vs.find(name=target_node_id)
             source_coords = (source_vertex["lon"], source_vertex["lat"])
             target_coords = (target_vertex["lon"], target_vertex["lat"])
 
-            # Mendapatkan data gelombang untuk node target
             wave_data = self.wave_data_locator.get_wave_data(target_coords)
+            bearing   = self._compute_bearing(source_coords, target_coords)
+            heading   = self._compute_heading(bearing, wave_data.get("dirpwsfc",0.0))
 
-            # Menghitung bearing dan heading relatif
-            adjusted_bearing = self._compute_bearing(source_coords, target_coords)
-            rel_heading = self._compute_heading(
-                adjusted_bearing,
-                wave_data.get("dirpwsfc", 0.0)
-            )
-
-            # Menyiapkan fitur untuk prediksi model
-            features = pd.DataFrame([[
+            df = pd.DataFrame([[
                 ship_speed,
-                rel_heading,
-                wave_data.get("htsgwsfc", 0.0),
-                wave_data.get("perpwsfc", 0.0),
+                heading,
+                wave_data.get("htsgwsfc",0.0),
+                wave_data.get("perpwsfc",0.0),
                 condition
-            ]], columns=["ship_speed", "wave_heading", "wave_height", "wave_period", "condition"])
-
-            # Mendapatkan prediksi
-            blocked_mask, roll, heave, pitch = self._predict_blocked(features)
-
-            return blocked_mask[0], roll[0], heave[0], pitch[0]
-
+            ]])
+            blocked, roll, heave, pitch = self._predict_blocked(df)
+            return blocked[0], roll[0], heave[0], pitch[0]
         except Exception as e:
-            logger.error(f"Gagal memeriksa status blokir edge dari {source_node_id} ke {target_node_id}: {e}")
-            return True, 0.0, 0.0, 0.0  # Mengasumsikan edge diblokir jika terjadi error
-
-    def _batch_process_edges(self, edges_data: List[dict], wave_data_id: str) -> List[dict]:
-        """
-        Process edges in batches with caching.
-        """
-        results = []
-        batch_to_process = []
-        batch_edge_data = []
-
-        for edge_data in edges_data:
-            # Check cache first
-            cached_result = self.edge_cache.get_cached_predictions(edge_data, wave_data_id)
-            if cached_result:
-                results.append(cached_result)
-            else:
-                batch_to_process.append(edge_data)
-                batch_edge_data.append(edge_data)
-
-            # Process batch when it reaches batch size
-            if len(batch_to_process) >= self.edge_cache.batch_size:
-                batch_results = self._process_edge_batch(batch_to_process, wave_data_id)
-                self.edge_cache.save_batch(batch_results, batch_edge_data, wave_data_id)
-                results.extend(batch_results)
-                batch_to_process = []
-                batch_edge_data = []
-
-        # Process remaining edges
-        if batch_to_process:
-            batch_results = self._process_edge_batch(batch_to_process, wave_data_id)
-            self.edge_cache.save_batch(batch_results, batch_edge_data, wave_data_id)
-            results.extend(batch_results)
-
-        return results
-
-    def _process_edge_batch(self, batch: List[dict], wave_data_id: str) -> List[dict]:
-        """
-        Process a single batch of edges.
-        """
-        features_list = []
-        for edge_data in batch:
-            source_coords = edge_data["source_coords"]
-            target_coords = edge_data["target_coords"]
-
-            wave_data = self.wave_data_locator.get_wave_data(target_coords)
-            adjusted_bearing = self._compute_bearing(source_coords, target_coords)
-            rel_heading = self._compute_heading(
-                adjusted_bearing,
-                wave_data.get("dirpwsfc", 0.0)
-            )
-
-            features_list.append([
-                edge_data["ship_speed"],
-                rel_heading,
-                wave_data.get("htsgwsfc", 0.0),
-                wave_data.get("perpwsfc", 0.0),
-                edge_data["condition"]
-            ])
-
-        # Predict using model
-        features_df = pd.DataFrame(
-            features_list,
-            columns=["ship_speed", "wave_heading", "wave_height", "wave_period", "condition"]
-        )
-        blocked_mask, roll, heave, pitch = self._predict_blocked(features_df)
-
-        # Format results
-        results = []
-        for i in range(len(batch)):
-            results.append({
-                "blocked": bool(blocked_mask[i]),
-                "roll": float(roll[i]),
-                "heave": float(heave[i]),
-                "pitch": float(pitch[i])
-            })
-        return results
+            logger.error(f"check_edge_blocked error: {e}")
+            return True, 0.0, 0.0, 0.0
 
     def find_shortest_path(
         self,
-        start: Tuple[float, float],
-        end: Tuple[float, float],
-        use_model: bool = False,
-        ship_speed: float = 8,
-        condition: int = 1
-    ) -> Tuple[List[dict], float]:
+        start: Tuple[float,float],
+        end:   Tuple[float,float],
+        use_model: bool=False,
+        ship_speed: float=8,
+        condition: int=1
+    )->Tuple[List[dict], float]:
         """
-        Menemukan path terpendek antara koordinat start dan end, dengan opsi menggunakan model ML
-        untuk validasi path berdasarkan kondisi gelombang.
-
-        Args:
-            start (Tuple[float, float]): Koordinat awal (longitude, latitude)
-            end (Tuple[float, float]): Koordinat akhir (longitude, latitude)
-            use_model (bool): Apakah menggunakan model ML untuk validasi path
-            ship_speed (float): Kecepatan kapal dalam knot
-            condition (int): Nilai kondisi untuk prediksi model
-
-        Returns:
-            Tuple[List[dict], float]: Tuple yang berisi:
-                - List dictionary yang berisi informasi node dalam path
-                - Total jarak/path weight
-
-        Raises:
-            ValueError: Jika WaveDataLocator belum diinisialisasi
-            RuntimeError: Jika pencarian path gagal
+        Cari path terpendek. 
+        - use_model=True => block edge berdasarkan wave_data + ML 
+        - GPU/multithread dipakai jika TF mendukung
+        - load/save dijkstra result
         """
-        # Memvalidasi inisialisasi
-        if self.wave_data_locator is None:
-            raise ValueError("WaveDataLocator belum diinisialisasi")
+        if not self.wave_data_locator:
+            raise ValueError("WaveDataLocator belum diinisialisasi.")
 
-        # Menghasilkan kunci cache untuk query ini
-        try:
-            query_key = self._query_key(start, end, use_model, ship_speed, condition)
-        except Exception as e:
-            logger.error(f"Gagal menghasilkan kunci cache: {e}")
-            raise RuntimeError(f"Gagal menghasilkan kunci cache: {str(e)}")
+        # Coba load dijkstra result
+        cached = self.load_dijkstra_result(start, end, use_model, ship_speed, condition)
+        if cached:
+            logger.info("Menggunakan dijkstra cache result from local JSON.")
+            return cached
 
-        # Memeriksa cache in-memory
-        if query_key in self.cache:
-            logger.info("Menggunakan hasil cache untuk query ini")
-            return self.cache[query_key]
+        # Proses path
+        wave_data_id = self._get_wave_data_identifier()
+        start_idx = self.grid_locator.find_nearest_node(*start)
+        end_idx   = self.grid_locator.find_nearest_node(*end)
 
-        try:
-            # Menemukan node terdekat untuk start dan end
-            start_node = self.grid_locator.find_nearest_node(*start)
-            end_node = self.grid_locator.find_nearest_node(*end)
+        if start_idx<0 or end_idx<0:
+            logger.error("Invalid start or end index.")
+            return [],0.0
 
-            start_node_id = self.igraph_graph.vs[start_node]["name"]
-            end_node_id = self.igraph_graph.vs[end_node]["name"]
+        if use_model:
+            # copy graph
+            gcopy = self.igraph_graph.copy()
+            edges_data = []
+            for e in gcopy.es:
+                s = gcopy.vs[e.source]
+                t = gcopy.vs[e.target]
+                edges_data.append({
+                    "edge_id": e.index,
+                    "source_coords": (s["lon"], s["lat"]),
+                    "target_coords": (t["lon"], t["lat"]),
+                    "ship_speed": ship_speed,
+                    "condition": condition
+                })
 
-            logger.info(f"Node Start: {start_node_id}, Node End: {end_node_id}")
+            logger.info(f"Batch process edges => wave_data_id={wave_data_id} ...")
+            edge_res = self._batch_process_edges(edges_data, wave_data_id)
+            # update weight
+            for ed, er in zip(edges_data, edge_res):
+                if er["blocked"]:
+                    gcopy.es[ed["edge_id"]]["weight"] = float('inf')
+                gcopy.es[ed["edge_id"]]["roll"]  = er["roll"]
+                gcopy.es[ed["edge_id"]]["heave"] = er["heave"]
+                gcopy.es[ed["edge_id"]]["pitch"] = er["pitch"]
 
-            if use_model:
-                # Membuat salinan graph untuk dimodifikasi
-                g = self.igraph_graph.copy()
+            path_ids = gcopy.get_shortest_paths(v=start_idx, to=end_idx, weights="weight")[0]
+            if not path_ids:
+                logger.warning("No path found with model.")
+                self.cache["dummy"] = ([],0.0)
+                return [],0.0
+            dist = gcopy.distances(source=start_idx, target=end_idx, weights="weight")[0][0]
 
-                # Prepare edge data for batch processing
-                edges_data = []
-                for edge in g.es:
-                    source_vertex = g.vs[edge.source]
-                    target_vertex = g.vs[edge.target]
-                    edges_data.append({
-                        "edge_id": edge.index,
-                        "source_coords": (source_vertex["lon"], source_vertex["lat"]),
-                        "target_coords": (target_vertex["lon"], target_vertex["lat"]),
-                        "ship_speed": ship_speed,
-                        "condition": condition
-                    })
-
-                # Get wave data identifier
-                wave_data_id = self._get_wave_data_identifier()
-
-                # Process edges in batches with caching
-                logger.info("Memproses edge dalam batch dengan caching...")
-                edge_results = self._batch_process_edges(edges_data, wave_data_id)
-
-                # Update graph weights based on results
-                for edge_data, result in zip(edges_data, edge_results):
-                    edge_id = edge_data["edge_id"]
-                    if result["blocked"]:
-                        g.es[edge_id]["weight"] = float("inf")  # Mengatur weight menjadi inf jika diblokir
-                    g.es[edge_id]["roll"] = result["roll"]
-                    g.es[edge_id]["heave"] = result["heave"]
-                    g.es[edge_id]["pitch"] = result["pitch"]
-
-                # Menjalankan algoritma Dijkstra menggunakan weights yang telah dimodifikasi
-                logger.info("Menjalankan algoritma Dijkstra...")
-                path_indices = g.get_shortest_paths(
-                    v=start_node,
-                    to=end_node,
-                    weights="weight",
-                    mode=ig.OUT,
-                    algorithm="dijkstra"
-                )[0]
-
-                if not path_indices:
-                    logger.warning("Tidak ditemukan path yang valid")
-                    result = ([], 0.0)
-                else:
-                    # Menghitung total weight/path distance
-                    total_weight = g.distances(
-                        source=start_node,
-                        target=end_node,
-                        weights="weight"
-                    )[0][0]
-
-                    # Membangun informasi path dengan metrik yang tepat
-                    path = []
-                    for i in range(len(path_indices)):
-                        vertex = g.vs[path_indices[i]]
-                        coords = (vertex["lon"], vertex["lat"])
-                        node_id = vertex["name"]
-                        try:
-                            wave_data = self.wave_data_locator.get_wave_data(coords)
-                        except Exception as e:
-                            logger.warning(f"Gagal mendapatkan data gelombang untuk node {node_id}: {e}")
-                            wave_data = {}
-
-                        if i < len(path_indices) - 1:
-                            next_vertex = g.vs[path_indices[i + 1]]
-                            next_coords = (next_vertex["lon"], next_vertex["lat"])
-
-                            adjusted_bearing = self._compute_bearing(coords, next_coords)
-                            rel_heading = self._compute_heading(
-                                adjusted_bearing,
-                                wave_data.get("dirpwsfc", 0.0)
-                            )
-
-                            edge = g.get_eid(vertex.index, next_vertex.index, error=False)
-                            if edge != -1:
-                                roll = g.es[edge].get("roll", 0.0)
-                                heave = g.es[edge].get("heave", 0.0)
-                                pitch = g.es[edge].get("pitch", 0.0)
-                            else:
-                                roll, heave, pitch = 0.0, 0.0, 0.0  # Nilai default
-                        else:
-                            # Node terakhir dalam path
-                            rel_heading = 0.0  # Atau nilai default lainnya
-                            roll, heave, pitch = 0.0, 0.0, 0.0  # Nilai default
-
-                        node_data = {
-                            "node_id": node_id,
-                            "coordinates": list(coords),
-                            "htsgwsfc": float(wave_data.get("htsgwsfc", 0.0)),
-                            "perpwsfc": float(wave_data.get("perpwsfc", 0.0)),
-                            "dirpwfsfc": float(wave_data.get("dirpwsfc", 0.0)),
-                            "rel_heading": float(rel_heading),
-                            "Roll": float(roll),
-                            "Heave": float(heave),
-                            "Pitch": float(pitch)
-                        }
-                        path.append(node_data)
-
-                    result = (path, total_weight)
-            else:
-                # Dijkstra standar tanpa model
-                logger.info("Menjalankan algoritma Dijkstra standar...")
+            # Bangun path
+            path_data = []
+            for i,node_i in enumerate(path_ids):
+                vx = gcopy.vs[node_i]
+                coords = (vx["lon"], vx["lat"])
+                wave_data={}
                 try:
-                    path_indices = self.igraph_graph.get_shortest_paths(
-                        v=start_node,
-                        to=end_node,
-                        weights="weight",
-                        mode=ig.OUT,
-                        algorithm="dijkstra"
-                    )[0]
+                    wave_data = self.wave_data_locator.get_wave_data(coords)
                 except Exception as e:
-                    logger.error(f"Gagal menjalankan algoritma Dijkstra: {e}")
-                    raise RuntimeError(f"Gagal menjalankan algoritma Dijkstra: {str(e)}")
+                    logger.warning(f"WaveData error: {e}")
 
-                if not path_indices:
-                    logger.warning("Tidak ditemukan path")
-                    result = ([], 0.0)
-                else:
-                    try:
-                        total_weight = self.igraph_graph.distances(
-                            source=start_node,
-                            target=end_node,
-                            weights="weight"
-                        )[0][0]
-                    except Exception as e:
-                        logger.error(f"Gagal menghitung total jarak: {e}")
-                        raise RuntimeError(f"Gagal menghitung total jarak: {str(e)}")
+                roll=heave=pitch=0.0
+                heading=0.0
+                if i<len(path_ids)-1:
+                    nxt= gcopy.vs[path_ids[i+1]]
+                    eid= gcopy.get_eid(node_i,nxt.index, error=False)
+                    if eid!=-1:
+                        roll = gcopy.es[eid].get("roll",0.0)
+                        heave= gcopy.es[eid].get("heave",0.0)
+                        pitch= gcopy.es[eid].get("pitch",0.0)
+                    bearing= self._compute_bearing(coords,(nxt["lon"],nxt["lat"]))
+                    heading= self._compute_heading(bearing, wave_data.get("dirpwsfc",0.0))
 
-                    # Membangun informasi path dengan metrik yang tepat
-                    path = []
-                    for i in range(len(path_indices)):
-                        vertex = self.igraph_graph.vs[path_indices[i]]
-                        coords = (vertex["lon"], vertex["lat"])
-                        node_id = vertex["name"]
-                        try:
-                            wave_data = self.wave_data_locator.get_wave_data(coords)
-                        except Exception as e:
-                            logger.warning(f"Gagal mendapatkan data gelombang untuk node {node_id}: {e}")
-                            wave_data = {}
+                path_data.append({
+                    "node_id": vx["name"],
+                    "coordinates": [coords[0], coords[1]],
+                    "htsgwsfc": float(wave_data.get("htsgwsfc",0.0)),
+                    "perpwsfc": float(wave_data.get("perpwsfc",0.0)),
+                    "dirpwsfc": float(wave_data.get("dirpwsfc",0.0)),
+                    "Roll":  roll,
+                    "Heave": heave,
+                    "Pitch": pitch,
+                    "rel_heading": heading
+                })
+            self.save_dijkstra_result(start, end, use_model, ship_speed, condition, path_data, dist)
+            return path_data, dist
+        else:
+            # Dijkstra standar
+            path_ids = self.igraph_graph.get_shortest_paths(
+                v=start_idx, to=end_idx, weights="weight"
+            )[0]
+            if not path_ids:
+                logger.warning("No path found (no-model).")
+                return [],0.0
+            dist = self.igraph_graph.distances(source=start_idx, target=end_idx, weights="weight")[0][0]
 
-                        if i < len(path_indices) - 1:
-                            next_vertex = self.igraph_graph.vs[path_indices[i + 1]]
-                            next_coords = (next_vertex["lon"], next_vertex["lat"])
-
-                            adjusted_bearing = self._compute_bearing(coords, next_coords)
-                            rel_heading = self._compute_heading(
-                                adjusted_bearing,
-                                wave_data.get("dirpwsfc", 0.0)
-                            )
-
-                            # Mendapatkan metrik gelombang dari edge menggunakan metode _check_edge_blocked
-                            is_blocked, roll, heave, pitch = self._check_edge_blocked(
-                                source_node_id=node_id,
-                                target_node_id=next_vertex["name"],
-                                ship_speed=ship_speed,
-                                condition=condition
-                            )
-
-                            # Jika edge diblokir, kita masih ingin path yang ditemukan sebelumnya tetap valid,
-                            # karena use_model=False. Namun, Roll, Heave, Pitch tetap diprediksi.
-                            # Bisa juga diputuskan untuk logika lain tergantung kebutuhan.
-                        else:
-                            # Node terakhir dalam path
-                            rel_heading = 0.0  # Atau nilai default lainnya
-                            is_blocked, roll, heave, pitch = False, 0.0, 0.0, 0.0  # Nilai default
-
-                        node_data = {
-                            "node_id": node_id,
-                            "coordinates": list(coords),
-                            "htsgwsfc": float(wave_data.get("htsgwsfc", 0.0)),
-                            "perpwsfc": float(wave_data.get("perpwsfc", 0.0)),
-                            "dirpwfsfc": float(wave_data.get("dirpwsfc", 0.0)),
-                            "rel_heading": float(rel_heading),
-                            "Roll": float(roll),
-                            "Heave": float(heave),
-                            "Pitch": float(pitch)
-                        }
-                        path.append(node_data)
-
-                    result = (path, total_weight)
-
-            # Memperbarui cache dengan hasil
-            self.cache[query_key] = result
-
-            # Menyimpan ke cache persistensi jika path ditemukan dan menggunakan model
-            if use_model and path_indices:
+            path_data=[]
+            for i,node_i in enumerate(path_ids):
+                vx = self.igraph_graph.vs[node_i]
+                coords = (vx["lon"], vx["lat"])
+                wave_data={}
                 try:
-                    self.save_dijkstra_result(
-                        start, end, use_model, ship_speed, condition,
-                        result[0], result[1]
+                    wave_data = self.wave_data_locator.get_wave_data(coords)
+                except Exception as e:
+                    logger.warning(f"WaveData error: {e}")
+
+                roll=heave=pitch=0.0
+                heading=0.0
+                if i<len(path_ids)-1:
+                    nxt = self.igraph_graph.vs[path_ids[i+1]]
+                    bearing= self._compute_bearing(coords,(nxt["lon"],nxt["lat"]))
+                    heading= self._compute_heading(bearing,wave_data.get("dirpwsfc",0.0))
+                    # check blocked => tetap panggil _check_edge_blocked tapi tdk mengubah weight
+                    blocked, r, h, p = self._check_edge_blocked(
+                        vx["name"], nxt["name"], ship_speed, condition
                     )
-                except Exception as e:
-                    logger.error(f"Gagal menyimpan ke cache persistensi: {e}")
+                    roll, heave, pitch = r, h, p
 
-            return result, 200
-        except Exception as e:
-            logger.error(f"Gagal: {e}")
-            raise RuntimeError(f"Gagal: {str(e)}")
+                path_data.append({
+                    "node_id": vx["name"],
+                    "coordinates": [coords[0], coords[1]],
+                    "htsgwsfc": float(wave_data.get("htsgwsfc",0.0)),
+                    "perpwsfc": float(wave_data.get("perpwsfc",0.0)),
+                    "dirpwsfc": float(wave_data.get("dirpwsfc",0.0)),
+                    "Roll":  roll,
+                    "Heave": heave,
+                    "Pitch": pitch,
+                    "rel_heading": heading
+                })
+            self.save_dijkstra_result(start, end, use_model, ship_speed, condition, path_data, dist)
+            return path_data, dist

@@ -76,7 +76,7 @@ export default function DataVisualizationPage() {
     useRouteStore();
 
   const datasets = {
-    normal_route: {
+    safest_route: {
       enviromental: [
         {
           label: 'Wave Height (m)',
@@ -118,7 +118,7 @@ export default function DataVisualizationPage() {
         },
       ],
     },
-    safest_route: {
+    normal_route: {
       enviromental: [
         {
           label: 'Wave Height (m)',
