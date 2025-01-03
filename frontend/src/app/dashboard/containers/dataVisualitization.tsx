@@ -91,7 +91,7 @@ export default function DataVisualizationPage() {
         },
         {
           label: 'Wave Heading (deg)',
-          data: safestRoute.map((p) => p.dirpwfsfc),
+          data: safestRoute.map((p) => p.dirpwsfc),
           yAxisID: 'y3',
           color: '#ffff00',
         },
@@ -133,7 +133,7 @@ export default function DataVisualizationPage() {
         },
         {
           label: 'Wave Heading (deg)',
-          data: optimalRoute.map((p) => p.dirpwfsfc),
+          data: optimalRoute.map((p) => p.dirpwsfc),
           yAxisID: 'y3',
           color: '#ffff00',
         },

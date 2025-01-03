@@ -21,7 +21,7 @@ interface PathPoint {
   Pitch: number;
   Roll: number;
   coordinates: [number, number]; // [longitude, latitude]
-  dirpwfsfc: number;
+  dirpwsfc: number;
   htsgwsfc: number;
   node_id: string;
   perpwsfc: number;

@@ -13,7 +13,7 @@ interface PathPoint {
   Pitch: number;
   Roll: number;
   coordinates: [number, number];
-  dirpwfsfc: number;
+  dirpwsfc: number;
   htsgwsfc: number;
   node_id: string;
   perpwsfc: number;
