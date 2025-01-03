@@ -74,51 +74,8 @@ export default function DataVisualizationPage() {
   );
   const { setCurrentAnimationIndex, setAnimationState, setActiveRoute } =
     useRouteStore();
-
   const datasets = {
     safest_route: {
-      enviromental: [
-        {
-          label: 'Wave Height (m)',
-          data: optimalRoute.map((p) => p.htsgwsfc),
-          yAxisID: 'y1',
-          color: '#ff0000',
-        },
-        {
-          label: 'Wave Period (s)',
-          data: optimalRoute.map((p) => p.perpwsfc),
-          yAxisID: 'y2',
-          color: '#00ff00',
-        },
-        {
-          label: 'Wave Heading (deg)',
-          data: optimalRoute.map((p) => p.dirpwfsfc),
-          yAxisID: 'y3',
-          color: '#ffff00',
-        },
-      ],
-      ship_motion: [
-        {
-          label: 'Roll (deg)',
-          data: optimalRoute.map((p) => p.Roll),
-          yAxisID: 'y1',
-          color: '#ff0000',
-        },
-        {
-          label: 'Heave (m)',
-          data: optimalRoute.map((p) => p.Heave),
-          yAxisID: 'y2',
-          color: '#00ff00',
-        },
-        {
-          label: 'Pitch (deg)',
-          data: optimalRoute.map((p) => p.Pitch),
-          yAxisID: 'y3',
-          color: '#ffff00',
-        },
-      ],
-    },
-    normal_route: {
       enviromental: [
         {
           label: 'Wave Height (m)',
@@ -144,7 +101,7 @@ export default function DataVisualizationPage() {
           label: 'Roll (deg)',
           data: safestRoute.map((p) => p.Roll),
           yAxisID: 'y1',
-          color: '#ff5722',
+          color: '#ff0000',
         },
         {
           label: 'Heave (m)',
@@ -155,6 +112,48 @@ export default function DataVisualizationPage() {
         {
           label: 'Pitch (deg)',
           data: safestRoute.map((p) => p.Pitch),
+          yAxisID: 'y3',
+          color: '#ffff00',
+        },
+      ],
+    },
+    normal_route: {
+      enviromental: [
+        {
+          label: 'Wave Height (m)',
+          data: optimalRoute.map((p) => p.htsgwsfc),
+          yAxisID: 'y1',
+          color: '#ff0000',
+        },
+        {
+          label: 'Wave Period (s)',
+          data: optimalRoute.map((p) => p.perpwsfc),
+          yAxisID: 'y2',
+          color: '#00ff00',
+        },
+        {
+          label: 'Wave Heading (deg)',
+          data: optimalRoute.map((p) => p.dirpwfsfc),
+          yAxisID: 'y3',
+          color: '#ffff00',
+        },
+      ],
+      ship_motion: [
+        {
+          label: 'Roll (deg)',
+          data: optimalRoute.map((p) => p.Roll),
+          yAxisID: 'y1',
+          color: '#ff5722',
+        },
+        {
+          label: 'Heave (m)',
+          data: optimalRoute.map((p) => p.Heave),
+          yAxisID: 'y2',
+          color: '#00ff00',
+        },
+        {
+          label: 'Pitch (deg)',
+          data: optimalRoute.map((p) => p.Pitch),
           yAxisID: 'y3',
           color: '#ffff00',
         },
