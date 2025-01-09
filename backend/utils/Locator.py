@@ -23,12 +23,12 @@ class GridLocator:
         return idx
     
 class WaveDataLocator:
-    def __init__(self, wave_data: Dict, current_wave_file: str):
+    def __init__(self, wave_data: Dict, wave_file: str):
         """
         Initializes the WaveDataLocator with wave data.
         """
         self.wave_data = wave_data
-        self.current_wave_file = current_wave_file
+        self.wave_file = wave_file
         self.required_vars = ["dirpwsfc", "htsgwsfc", "perpwsfc"]
 
         # Validate wave_data structure

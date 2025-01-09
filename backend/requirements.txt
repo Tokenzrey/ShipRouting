@@ -18,4 +18,6 @@ uvicorn
 aiofiles 
 filelock 
 tensorflow
-skckit-learn
+scikit-learn
+websockets
+rtree

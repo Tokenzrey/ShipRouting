@@ -1,4 +1,6 @@
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
+
+from pydantic import BaseModel, conlist
 
 def validate_djikstra_request(data: Dict):
     """
@@ -55,3 +57,39 @@ class DjikstraRequest:
 
     def get_use_model(self) -> bool:
         return self.use_model
+
+class PathPoint(BaseModel):
+    node_id: str
+    coordinates: Tuple[float, float]
+    htsgwsfc: float
+    perpwsfc: float
+    dirpwsfc: float
+    Roll: float
+    Heave: float
+    Pitch: float
+    rel_heading: float
+
+
+class FinalPath(BaseModel):
+    path: List[PathPoint]
+    distance: float
+
+
+class EdgeBlock(BaseModel):
+    edge_id: int
+    source: Tuple[float, float]
+    target: Tuple[float, float]
+    isBlocked: bool
+
+
+class DijkstraResponse(BaseModel):
+    dijkstra_id: str
+    wave_data_id: str
+    partial_path: List[PathPoint]
+    final_path: FinalPath
+    edge_blocks: List[EdgeBlock]
+
+class BlockedEdgesViewRequest(BaseModel):
+    view_bounds: Tuple[float, float, float, float]  # [min_lon, min_lat, max_lon, max_lat]
+    ship_speed: float = 8.0
+    condition: int = 1

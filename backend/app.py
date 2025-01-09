@@ -1,13 +1,14 @@
 # app.py
+
 import os
 import json
 import logging
 import asyncio
 from datetime import datetime, timedelta
-from typing import List, Optional, Tuple, Dict
+from typing import List, Optional, Tuple, Dict, Any
 
 import aiofiles
-from fastapi import FastAPI, HTTPException, Request, Depends, Query
+from fastapi import FastAPI, HTTPException, Request, Depends, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -15,8 +16,8 @@ from apscheduler.triggers.cron import CronTrigger
 from filelock import FileLock
 import numpy as np
 
-from controllers import get_wave_data_controller, djikstra_route_controller  # Sesuaikan dengan FastAPI
-from managers import RouteOptimizer, fetch_and_cache_wave_data  # Pastikan ini diimplementasikan
+from controllers import get_wave_data_controller, djikstra_route_controller
+from managers import RouteOptimizer, fetch_and_cache_wave_data
 from utils import WaveDataLocator, GridLocator, local_file_exists_for_all
 from constants import (
     DATA_DIR_HTSGWSFC,
@@ -26,6 +27,7 @@ from constants import (
     DATA_DIR,
     Config
 )
+from models import BlockedEdgesViewRequest
 
 # Inisialisasi logging
 logging.basicConfig(
@@ -93,6 +95,7 @@ async def initialize_global_instances():
                 wave_data_content = await f.read()
                 wave_data = json.loads(wave_data_content)
                 wave_data_locator = WaveDataLocator(wave_data, latest_wave_file)
+                wave_data_locator.wave_file = latest_wave_file 
         else:
             wave_data_locator = None
 
@@ -222,8 +225,8 @@ async def refresh_wave_data_locator(request: Request, call_next):
 
 @app.get("/api/wave_data")
 async def api_get_wave_data(
-    date: str = Query(None, description="Tanggal dalam format YYYYMMDD"),
-    time_slot: str = Query(None, description="Slot waktu (00, 06, 12, 18)"),
+    date: Optional[str] = Query(None, description="Tanggal dalam format YYYYMMDD"),
+    time_slot: Optional[str] = Query(None, description="Slot waktu (00, 06, 12, 18)"),
     currentdate: bool = Query(True, description="Apakah menggunakan tanggal saat ini")
 ):
     """
@@ -314,3 +317,21 @@ async def api_wave_data_by_coords(
     except Exception as e:
         logger.error(f"Error in /api/wave_data_by_coords: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error.")
+
+@app.post("/get_blocked_edges_in_view")
+async def get_blocked_edges_in_view(request: BlockedEdgesViewRequest):
+    try:
+        logging.info(f"Received request: {request}")
+        view_bounds = tuple(request.view_bounds)  # (min_lon, min_lat, max_lon, max_lat)
+        logging.info(f"Parsed view_bounds: {view_bounds}")
+
+        blocked_edges = route_optimizer.get_blocked_edges_in_view(
+            view_bounds=view_bounds,
+            ship_speed=request.ship_speed,
+            condition=request.condition
+        )
+        return {
+            "blocked_edges": blocked_edges
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

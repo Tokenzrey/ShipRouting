@@ -3,15 +3,16 @@ import json
 import hashlib
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
 import pandas as pd
 import igraph as ig
-import joblib
 from filelock import FileLock
 from keras.api.models import load_model
+import joblib
 import tensorflow as tf
+from rtree import index
 
 from utils import GridLocator  # Pastikan modul ini diimplementasikan
 from constants import DATA_DIR, DATA_DIR_CACHE  # Pastikan konstanta ini didefinisikan
@@ -38,7 +39,6 @@ def setup_tf_for_production():
                 logger.info("Single CPU mode.")
     except Exception as e:
         logger.warning(f"TensorFlow GPU/threads config error: {e}. Using default single-thread CPU.")
-
 
 class EdgeBatchCache:
     """
@@ -182,13 +182,14 @@ class EdgeBatchCache:
             self._flush_to_disk(self.current_wave_data_id)
         logger.info("EdgeBatchCache finalize complete.")
 
-
 class RouteOptimizer:
     """
     RouteOptimizer siap produksi:
     - Single file pkl per wave_data_id untuk edge caching
     - Optional GPU/multithread via TensorFlow kalau tersedia
     - Memiliki load/save dijkstra result
+    - Menyimpan partial paths
+    - Menyediakan fungsi untuk mendapatkan edges yang diblokir dalam view
     """
     def __init__(
         self,
@@ -220,7 +221,7 @@ class RouteOptimizer:
         self.igraph_graph = self._load_or_build_graph()
 
         # Dijkstra in-memory cache
-        self.cache: Dict[str, Tuple[List[dict], float]] = {}
+        self.cache: Dict[str, Tuple[List[dict], float, List[List[dict]], List[dict]]] = {}
 
         logger.info(f"Loading ML model from {self.model_path} ...")
         self.model = load_model(self.model_path, compile=False)
@@ -243,11 +244,16 @@ class RouteOptimizer:
             compression_level=0
         )
 
+        # Spatial index untuk edges
+        self.edge_spatial_index = index.Index()
+        self._build_spatial_index()
+
     def finalize(self):
         """
         Dipanggil di shutdown => flush edge_cache
         """
         self.edge_cache.finalize()
+        # Tidak ada resource khusus untuk Rtree yang perlu di-finalize
 
     def update_wave_data_locator(self, wave_data_locator):
         """
@@ -256,10 +262,10 @@ class RouteOptimizer:
         self.finalize()
         self.wave_data_locator = wave_data_locator
         self.cache.clear()
-        logger.info("WaveDataLocator updated, caches cleared.")
+        logger.info("WaveDataLocator updated, caches cleared, spatial index rebuilt.")
 
     def _get_wave_data_identifier(self) -> str:
-        wf = self.wave_data_locator.current_wave_file
+        wf = self.wave_data_locator.wave_file
         path = os.path.join(DATA_DIR_CACHE, wf)
         with open(path, 'rb') as f:
             cont = f.read()
@@ -309,6 +315,18 @@ class RouteOptimizer:
         g.add_edges(tuples)
         g.es["weight"] = w_list
         g.es["bearing"] = b_list
+
+        # Pastikan semua edge memiliki atribut 'roll', 'heave', dan 'pitch'
+        # Inisialisasi dengan nilai default 0.0 jika tidak ada
+        for attr in ['roll', 'heave', 'pitch']:
+            if attr not in g.es.attributes():
+                g.es[attr] = [0.0] * g.ecount()
+            else:
+                # Ganti None atau nilai yang tidak valid dengan 0.0
+                g.es[attr] = [
+                    float(val) if val is not None else 0.0
+                    for val in g.es[attr]
+                ]
 
         g.write_pickle(self.saved_graph_file)
         logger.info("Graph built & pickled.")
@@ -360,11 +378,15 @@ class RouteOptimizer:
         ship_speed: float,
         condition: int,
         path: List[dict],
-        distance: float
+        distance: float,
+        partial_paths: List[List[dict]],
+        all_edges: List[dict]  # Akan diabaikan, tapi parameter masih ada untuk konsistensi
     ):
         """
         Menyimpan hasil Dijkstra ke JSON <wave_data_id>.json,
-        dengan struktur with_model / without_model.
+        dengan struktur with_model / without_model,
+        termasuk partial_paths.
+        all_edges diabaikan dan diisi kosong.
         """
         wave_data_id = self._get_wave_data_identifier()
         cache_file = os.path.join(self.dijkstra_cache_dir, f"{wave_data_id}.json")
@@ -379,6 +401,8 @@ class RouteOptimizer:
             "condition": condition,
             "path": path,
             "distance": float(distance),
+            "partial_paths": partial_paths,
+            "all_edges": [],  # Mengembalikan array kosong
             "timestamp": datetime.utcnow().isoformat() + "Z"
         }
 
@@ -420,9 +444,11 @@ class RouteOptimizer:
         use_model: bool,
         ship_speed: float,
         condition: int
-    ) -> Optional[Tuple[List[dict], float]]:
+    ) -> Optional[Dict[str, Any]]:
         """
         Memuat hasil Dijkstra dari <wave_data_id>.json
+        Termasuk path, distance, partial_paths
+        all_edges diabaikan dan dikembalikan sebagai array kosong
         """
         wave_data_id = self._get_wave_data_identifier()
         cache_file = os.path.join(self.dijkstra_cache_dir, f"{wave_data_id}.json")
@@ -477,7 +503,12 @@ class RouteOptimizer:
 
             if item_key == query_key:
                 logger.info("Found dijkstra result in local JSON cache.")
-                return (item["path"], float(item["distance"]))
+                return {
+                    "path": item["path"],
+                    "distance": float(item["distance"]),
+                    "partial_paths": item.get("partial_paths", []),
+                    "all_edges": []  # Mengembalikan array kosong
+                }
 
         logger.info("No matching dijkstra result in local JSON.")
         return None
@@ -487,6 +518,9 @@ class RouteOptimizer:
         Memproses edges secara batch => blocked, roll, heave, pitch
         Menggunakan chunk & EdgeBatchCache single-file pkl.
         Setelah seluruh batch selesai, kita flush ke disk.
+        Optimasi:
+          - Memproses sebanyak mungkin edge dalam satu batch
+          - Mengurangi overhead dengan meminimalisir operasi loop
         """
         self.edge_cache.set_current_wave_data_id(wave_data_id)
         chunk_size = self.edge_cache.batch_size
@@ -496,22 +530,27 @@ class RouteOptimizer:
         buffer_edges = []
 
         def flush_chunk():
+            nonlocal buffer_inputs, buffer_edges
             if not buffer_inputs:
                 return []
             df = pd.DataFrame(buffer_inputs)
             blocked, roll, heave, pitch = self._predict_blocked(df)
-            out = []
-            for i in range(len(buffer_inputs)):
-                out.append({
-                    "blocked": bool(blocked[i]),
-                    "roll": float(roll[i]),
-                    "heave": float(heave[i]),
-                    "pitch": float(pitch[i])
-                })
+            out = [
+                {
+                    "blocked": bool(b),
+                    "roll": float(r),
+                    "heave": float(h),
+                    "pitch": float(p)
+                }
+                for b, r, h, p in zip(blocked, roll, heave, pitch)
+            ]
             # Simpan batch ke in-memory
             self.edge_cache.save_batch(out, buffer_edges, wave_data_id)
+            buffer_inputs = []
+            buffer_edges = []
             return out
 
+        # Optimasi: Menggunakan iterasi lebih cepat dan mengurangi fungsi panggilan
         for ed in edges_data:
             cached = self.edge_cache.get_cached_predictions(ed, wave_data_id)
             if cached:
@@ -534,51 +573,89 @@ class RouteOptimizer:
                 if len(buffer_inputs) >= chunk_size:
                     chunk_results = flush_chunk()
                     results.extend(chunk_results)
-                    buffer_inputs.clear()
-                    buffer_edges.clear()
 
         # Flush sisa edges
         if buffer_inputs:
             chunk_results = flush_chunk()
             results.extend(chunk_results)
 
-        # **Perbaikan**: Setelah semua batch selesai, flush ke disk 
+        # Setelah semua batch selesai, flush ke disk 
         self.edge_cache._flush_to_disk(wave_data_id)
 
         return results
 
-    def _check_edge_blocked(
+    def _build_spatial_index(self):
+        """
+        Membangun spatial index (Rtree) untuk semua edges dalam graph.
+        """
+        logger.info("Building spatial index for edges...")
+        p = index.Property()
+        p.dimension = 2  # 2D indexing
+        self.edge_spatial_index = index.Index(properties=p)
+        for e in self.igraph_graph.es:
+            src = self.igraph_graph.vs[e.source]
+            tgt = self.igraph_graph.vs[e.target]
+            min_lon = min(src["lon"], tgt["lon"])
+            min_lat = min(src["lat"], tgt["lat"])
+            max_lon = max(src["lon"], tgt["lon"])
+            max_lat = max(src["lat"], tgt["lat"])
+            # Insert edge index with bounding box
+            self.edge_spatial_index.insert(e.index, (min_lon, min_lat, max_lon, max_lat))
+        logger.info("Spatial index built successfully.")
+
+    def get_blocked_edges_in_view(
         self,
-        source_node_id: str,
-        target_node_id: str,
-        ship_speed: float,
-        condition: int
-    ) -> Tuple[bool, float, float, float]:
+        view_bounds: Tuple[float, float, float, float],
+        ship_speed: float = 8,
+        condition: int = 1
+    ) -> List[Dict[str, Any]]:
         """
-        Dipakai di mode tanpa use_model (prediksi satu-per-satu).
+        Mendapatkan daftar edges yang diblokir dalam area view_bounds.
+        
+        :param view_bounds: Tuple (min_lon, min_lat, max_lon, max_lat)
+        :param ship_speed: Kecepatan kapal
+        :param condition: Kondisi kapal
+        :return: List of blocked edges within view
         """
-        try:
-            source_vertex = self.igraph_graph.vs.find(name=source_node_id)
-            target_vertex = self.igraph_graph.vs.find(name=target_node_id)
-            source_coords = (source_vertex["lon"], source_vertex["lat"])
-            target_coords = (target_vertex["lon"], target_vertex["lat"])
+        min_lon, min_lat, max_lon, max_lat = view_bounds
+        logger.info(f"Querying blocked edges within view: {view_bounds}")
 
-            wave_data = self.wave_data_locator.get_wave_data(target_coords)
-            bearing = self._compute_bearing(source_coords, target_coords)
-            heading = self._compute_heading(bearing, float(wave_data.get("dirpwsfc", 0.0)))
+        # Cari semua edges yang intersect dengan view bounds
+        candidate_edge_ids = list(self.edge_spatial_index.intersection(view_bounds))
+        logger.info(f"Found {len(candidate_edge_ids)} candidate edges within view.")
 
-            df = pd.DataFrame([[
-                ship_speed,
-                heading,
-                float(wave_data.get("htsgwsfc", 0.0)),
-                float(wave_data.get("perpwsfc", 0.0)),
-                condition
-            ]])
-            blocked, roll, heave, pitch = self._predict_blocked(df)
-            return bool(blocked[0]), float(roll[0]), float(heave[0]), float(pitch[0])
-        except Exception as e:
-            logger.error(f"check_edge_blocked error: {e}")
-            return True, 0.0, 0.0, 0.0
+        blocked_edges = []
+        wave_data_id = self._get_wave_data_identifier()
+
+        for eid in candidate_edge_ids:
+            e = self.igraph_graph.es[eid]
+            src = self.igraph_graph.vs[e.source]
+            tgt = self.igraph_graph.vs[e.target]
+            edge_info = {
+                "edge_id": eid,
+                "source_coords": (src["lon"], src["lat"]),
+                "target_coords": (tgt["lon"], tgt["lat"]),
+                "ship_speed": ship_speed,
+                "condition": condition
+            }
+            cached = self.edge_cache.get_cached_predictions(edge_info, wave_data_id)
+            is_blocked = False
+            if cached:
+                is_blocked = cached.get("blocked", False)
+            else:
+                # Jika tidak ada cache, tentukan apakah edge diblokir berdasarkan atribut
+                is_blocked = (e["roll"] >= 6) or (e["heave"] >= 0.7) or (e["pitch"] >= 3)
+
+            if is_blocked:
+                blocked_edges.append({
+                    "edge_id": eid,
+                    "source_coords": edge_info["source_coords"],
+                    "target_coords": edge_info["target_coords"],
+                    "isBlocked": is_blocked
+                })
+
+        logger.info(f"Total blocked edges in view: {len(blocked_edges)}")
+        return blocked_edges
 
     def find_shortest_path(
         self,
@@ -587,20 +664,29 @@ class RouteOptimizer:
         use_model: bool = False,
         ship_speed: float = 8,
         condition: int = 1
-    ) -> Tuple[List[dict], float]:
+    ) -> Tuple[List[dict], float, List[List[dict]], List[dict]]:
         """
         Cari path terpendek. 
         - use_model=True => block edge via wave_data + ML 
-        - GPU/multithread dipakai jika TF mendukung
-        - load/save dijkstra result
+        - jika no-model => tetap gunakan roll, heave, pitch dari edge cache
+        - Mengembalikan path_data, distance, partial_paths, dan all_edges (kosong)
+        Optimasi:
+          - Menggunakan Dijkstra bawaan igraph jika memungkinkan
+          - Mengoptimalkan batch processing edge
         """
         if not self.wave_data_locator:
             raise ValueError("WaveDataLocator belum diinisialisasi.")
 
+        # Coba load dari cache
         cached = self.load_dijkstra_result(start, end, use_model, ship_speed, condition)
         if cached:
             logger.info("Using cached dijkstra result from local JSON.")
-            return cached
+            return (
+                cached["path"],
+                cached["distance"],
+                cached.get("partial_paths", []),
+                cached.get("all_edges", [])
+            )
 
         wave_data_id = self._get_wave_data_identifier()
         start_idx = self.grid_locator.find_nearest_node(*start)
@@ -608,42 +694,58 @@ class RouteOptimizer:
 
         if start_idx < 0 or end_idx < 0:
             logger.error("Invalid start or end index.")
-            return [], 0.0
+            return [], 0.0, [], []
 
         if use_model:
+            # ========== Dijkstra dengan model (blocking edges) ==========
             gcopy = self.igraph_graph.copy()
             edges_data = []
+
             for e in gcopy.es:
                 s = gcopy.vs[e.source]
                 t = gcopy.vs[e.target]
-                edges_data.append({
+                edge_info = {
                     "edge_id": e.index,
                     "source_coords": (s["lon"], s["lat"]),
                     "target_coords": (t["lon"], t["lat"]),
                     "ship_speed": ship_speed,
                     "condition": condition
-                })
+                }
+                edges_data.append(edge_info)
 
             logger.info(f"Batch processing edges => wave_data_id={wave_data_id} ...")
             edge_res = self._batch_process_edges(edges_data, wave_data_id)
 
-            # Update graph edges
-            for ed, er in zip(edges_data, edge_res):
-                eidx = ed["edge_id"]
-                if er["blocked"]:
-                    gcopy.es[eidx]["weight"] = float('inf')
-                gcopy.es[eidx]["roll"] = float(er["roll"])
-                gcopy.es[eidx]["heave"] = float(er["heave"])
-                gcopy.es[eidx]["pitch"] = float(er["pitch"])
+            # Update graph edges: if blocked or roll/heave/pitch melebihi ambang => weight=inf
+            # Optimasi: Gunakan numpy untuk operasi batch
+            is_blocked = np.array([
+                er["blocked"] or er["roll"] >= 6 or er["heave"] >= 0.7 or er["pitch"] >= 3
+                for er in edge_res
+            ])
+            gcopy.es["weight"] = np.where(is_blocked, float('inf'), gcopy.es["weight"])
 
-            path_ids = gcopy.get_shortest_paths(v=start_idx, to=end_idx, weights="weight")[0]
-            if not path_ids:
-                logger.warning("No path found with model.")
-                return [], 0.0
+            # Simpan informasi untuk all_edges (akan diabaikan, mengembalikan array kosong)
+            all_edges = []  # Diubah menjadi array kosong
 
-            dist = float(gcopy.distances(source=start_idx, target=end_idx, weights="weight")[0][0])
+            # Menggunakan Dijkstra Bawaan igraph
+            try:
+                shortest_paths = gcopy.get_shortest_paths(
+                    start_idx,
+                    to=end_idx,
+                    weights="weight",
+                    output="vpath"
+                )[0]
+                if not shortest_paths:
+                    logger.warning("No path found with model using igraph's Dijkstra.")
+                    return [], 0.0, [], all_edges
+                distance = gcopy.shortest_paths(source=start_idx, target=end_idx, weights="weight")[0][0]
+            except Exception as e:
+                logger.error(f"Error during Dijkstra with model: {e}")
+                return [], 0.0, [], all_edges
+
+            # Convert path_ids to path_data
             path_data = []
-            for i, node_i in enumerate(path_ids):
+            for i, node_i in enumerate(shortest_paths):
                 vx = gcopy.vs[node_i]
                 coords = (vx["lon"], vx["lat"])
 
@@ -654,22 +756,24 @@ class RouteOptimizer:
                     logger.warning(f"WaveData error: {e}")
 
                 roll = heave = pitch = 0.0
-                heading = 0.0
-                if i < len(path_ids) - 1:
-                    nxt = gcopy.vs[path_ids[i + 1]]
-                    eid = gcopy.get_eid(node_i, nxt.index, error=False)
+
+                if i < len(shortest_paths) - 1:
+                    nxt = gcopy.vs[shortest_paths[i + 1]]
+                    eid = gcopy.get_eid(node_i, nxt.index, directed=False, error=False)
                     if eid != -1:
-                        edge_attrs = gcopy.es[eid].attribute_names()
-                        roll = float(gcopy.es[eid]["roll"]) if "roll" in edge_attrs else 0.0
-                        heave = float(gcopy.es[eid]["heave"]) if "heave" in edge_attrs else 0.0
-                        pitch = float(gcopy.es[eid]["pitch"]) if "pitch" in edge_attrs else 0.0
+                        # Pastikan atribut ada sebelum mengakses
+                        roll = float(gcopy.es[eid]["roll"]) if "roll" in gcopy.es[eid].attributes() else 0.0
+                        heave = float(gcopy.es[eid]["heave"]) if "heave" in gcopy.es[eid].attributes() else 0.0
+                        pitch = float(gcopy.es[eid]["pitch"]) if "pitch" in gcopy.es[eid].attributes() else 0.0
 
                     bearing = self._compute_bearing(coords, (nxt["lon"], nxt["lat"]))
                     heading = self._compute_heading(bearing, float(wave_data.get("dirpwsfc", 0.0)))
+                else:
+                    heading = 0.0  # No heading for the last node
 
                 path_data.append({
                     "node_id": vx["name"],
-                    "coordinates": [coords[0], coords[1]],
+                    "coordinates": list(coords),
                     "htsgwsfc": float(wave_data.get("htsgwsfc", 0.0)),
                     "perpwsfc": float(wave_data.get("perpwsfc", 0.0)),
                     "dirpwsfc": float(wave_data.get("dirpwsfc", 0.0)),
@@ -679,21 +783,54 @@ class RouteOptimizer:
                     "rel_heading": heading
                 })
 
-            self.save_dijkstra_result(start, end, use_model, ship_speed, condition, path_data, dist)
-            return path_data, dist
+            # Partial paths dapat diambil dari path langkah demi langkah
+            partial_paths = []
+            for i in range(1, len(shortest_paths)):
+                partial_path = []
+                for node_id in shortest_paths[:i+1]:
+                    vx = gcopy.vs[node_id]
+                    coords = (vx["lon"], vx["lat"])
+                    wave_data = {}
+                    try:
+                        wave_data = self.wave_data_locator.get_wave_data(coords)
+                    except Exception as e:
+                        logger.warning(f"WaveData error: {e}")
+
+                    partial_path.append({
+                        "node_id": vx["name"],
+                        "coordinates": list(coords),
+                        "htsgwsfc": float(wave_data.get("htsgwsfc", 0.0)),
+                        "perpwsfc": float(wave_data.get("perpwsfc", 0.0)),
+                        "dirpwsfc": float(wave_data.get("dirpwsfc", 0.0))
+                    })
+                partial_paths.append(partial_path)
+
+            self.save_dijkstra_result(
+                start, end, use_model, ship_speed, condition, path_data, distance, partial_paths, all_edges
+            )
+            return path_data, distance, partial_paths, all_edges
 
         else:
-            # Dijkstra standar
-            path_ids = self.igraph_graph.get_shortest_paths(
-                v=start_idx, to=end_idx, weights="weight"
-            )[0]
-            if not path_ids:
-                logger.warning("No path found (no-model).")
-                return [], 0.0
+            # ========== Dijkstra standar (tanpa blocking), tapi roll/heave/pitch tetap dari cache ==========
+            # Menggunakan Dijkstra Bawaan igraph
+            try:
+                shortest_paths = self.igraph_graph.get_shortest_paths(
+                    start_idx,
+                    to=end_idx,
+                    weights="weight",
+                    output="vpath"
+                )[0]
+                if not shortest_paths:
+                    logger.warning("No path found (no-model) using igraph's Dijkstra.")
+                    return [], 0.0, [], []
+                distance = self.igraph_graph.shortest_paths(source=start_idx, target=end_idx, weights="weight")[0][0]
+            except Exception as e:
+                logger.error(f"Error during Dijkstra without model: {e}")
+                return [], 0.0, [], []
 
-            dist = float(self.igraph_graph.distances(source=start_idx, target=end_idx, weights="weight")[0][0])
+            # Convert path_ids to path_data
             path_data = []
-            for i, node_i in enumerate(path_ids):
+            for i, node_i in enumerate(shortest_paths):
                 vx = self.igraph_graph.vs[node_i]
                 coords = (vx["lon"], vx["lat"])
 
@@ -706,19 +843,32 @@ class RouteOptimizer:
                 roll = heave = pitch = 0.0
                 heading = 0.0
 
-                if i < len(path_ids) - 1:
-                    nxt = self.igraph_graph.vs[path_ids[i + 1]]
-                    bearing = self._compute_bearing(coords, (nxt["lon"], nxt["lat"]))
-                    heading = self._compute_heading(bearing, float(wave_data.get("dirpwsfc", 0.0)))
+                if i < len(shortest_paths) - 1:
+                    nxt = self.igraph_graph.vs[shortest_paths[i + 1]]
+                    eid = self.igraph_graph.get_eid(node_i, nxt.index, directed=False, error=False)
+                    if eid != -1:
+                        cached = self.edge_cache.get_cached_predictions({
+                            "source_coords": (vx["lon"], vx["lat"]),
+                            "target_coords": (nxt["lon"], nxt["lat"]),
+                            "ship_speed": ship_speed,
+                            "condition": condition
+                        }, wave_data_id)
+                        if cached:
+                            roll = float(cached.get("roll", 0.0))
+                            heave = float(cached.get("heave", 0.0))
+                            pitch = float(cached.get("pitch", 0.0))
+                        else:
+                            # Pastikan atribut ada sebelum mengakses
+                            roll = float(self.igraph_graph.es[eid]["roll"]) if "roll" in self.igraph_graph.es[eid].attributes() else 0.0
+                            heave = float(self.igraph_graph.es[eid]["heave"]) if "heave" in self.igraph_graph.es[eid].attributes() else 0.0
+                            pitch = float(self.igraph_graph.es[eid]["pitch"]) if "pitch" in self.igraph_graph.es[eid].attributes() else 0.0
 
-                    blocked, r, h, p = self._check_edge_blocked(
-                        vx["name"], nxt["name"], ship_speed, condition
-                    )
-                    roll, heave, pitch = float(r), float(h), float(p)
+                        bearing = self._compute_bearing(coords, (nxt["lon"], nxt["lat"]))
+                        heading = self._compute_heading(bearing, float(wave_data.get("dirpwsfc", 0.0)))
 
                 path_data.append({
                     "node_id": vx["name"],
-                    "coordinates": [coords[0], coords[1]],
+                    "coordinates": list(coords),
                     "htsgwsfc": float(wave_data.get("htsgwsfc", 0.0)),
                     "perpwsfc": float(wave_data.get("perpwsfc", 0.0)),
                     "dirpwsfc": float(wave_data.get("dirpwsfc", 0.0)),
@@ -728,5 +878,32 @@ class RouteOptimizer:
                     "rel_heading": heading
                 })
 
-            self.save_dijkstra_result(start, end, use_model, ship_speed, condition, path_data, dist)
-            return path_data, dist
+            # Partial paths dapat diambil dari path langkah demi langkah
+            partial_paths = []
+            for i in range(1, len(shortest_paths)):
+                partial_path = []
+                for node_id in shortest_paths[:i+1]:
+                    vx = self.igraph_graph.vs[node_id]
+                    coords = (vx["lon"], vx["lat"])
+                    wave_data = {}
+                    try:
+                        wave_data = self.wave_data_locator.get_wave_data(coords)
+                    except Exception as e:
+                        logger.warning(f"WaveData error: {e}")
+
+                    partial_path.append({
+                        "node_id": vx["name"],
+                        "coordinates": list(coords),
+                        "htsgwsfc": float(wave_data.get("htsgwsfc", 0.0)),
+                        "perpwsfc": float(wave_data.get("perpwsfc", 0.0)),
+                        "dirpwsfc": float(wave_data.get("dirpwsfc", 0.0))
+                    })
+                partial_paths.append(partial_path)
+
+            # **Mengumpulkan semua edges dalam graph untuk visualisasi (Diabaikan)**
+            all_edges = []  # Diubah menjadi array kosong
+
+            self.save_dijkstra_result(
+                start, end, use_model, ship_speed, condition, path_data, distance, partial_paths, all_edges
+            )
+            return path_data, distance, partial_paths, all_edges
