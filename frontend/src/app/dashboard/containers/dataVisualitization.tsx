@@ -385,16 +385,13 @@ export default function DataVisualizationPage() {
         {/* Line Chart */}
         <div className='relative'>
           <LineChart
-            dataset={currentDataset.map((item) => ({
-              ...item,
-              highlightIndex: currentIndex,
-            }))}
+            dataset={currentDataset} // Hapus highlightIndex
             height={height - 94.5}
           />
           <div
             className='absolute top-0 h-full w-[2px] bg-red-500'
             style={{
-              left: `${1.9 + (currentIndex / (totalDataPoints - 1)) * 93.5}%`,
+              left: `${(currentIndex / (totalDataPoints - 1)) * 100}%`, // Sesuaikan persentase
               transition: 'left 0.5s linear',
             }}
           ></div>

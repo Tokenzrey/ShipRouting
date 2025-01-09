@@ -1,16 +1,13 @@
 import { Map as OlMap } from 'ol';
 import { Extent } from 'ol/extent';
 import { fromLonLat } from 'ol/proj';
+import { WAVE_HEIGHT_THRESHOLDS } from './OverlayHandler';
+import { getColorForValue } from './OverlayHandler';
 
 // Constants
 const RAD_CONVERSION = Math.PI / 180;
 const ARROW_SCALE_FACTOR = 0.8;
 const BASE_LINE_WIDTH = 2;
-const WAVE_HEIGHT_THRESHOLDS = {
-  CALM: 0.5,
-  MODERATE: 1.5,
-  HIGH: 2.5,
-};
 
 // Type Definitions
 interface WaveLayerData {
@@ -126,7 +123,11 @@ const getLineWidthByPeriod = (period: number): number => {
 };
 
 // Create Canvas Overlay for Animations
-const createCanvasOverlay = (map: OlMap, data: WavePoint[]) => {
+const createCanvasOverlay = (
+  map: OlMap,
+  data: WavePoint[],
+  getColor?: (val: number) => string,
+) => {
   const targetElement = map.getTargetElement() as HTMLElement;
   const canvas = document.createElement('canvas');
   canvas.className = 'canvas-wave';
@@ -238,6 +239,7 @@ export const addWaveLayerToMap = async (
   map: OlMap,
   animationEnabled: boolean,
   previousCleanup: (() => void) | null,
+  setWaveRangeAnim?: (range: { min: number; max: number } | null) => void,
 ): Promise<() => void | null> => {
   if (previousCleanup) {
     previousCleanup();
@@ -270,7 +272,17 @@ export const addWaveLayerToMap = async (
       }
     }
 
-    return createCanvasOverlay(map, wavePoints);
+    const heights = wavePoints.map((wp) => wp.height);
+    const minVal = Math.min(...heights);
+    const maxVal = Math.max(...heights);
+
+    if (setWaveRangeAnim) {
+      setWaveRangeAnim({ min: minVal, max: maxVal });
+    }
+
+    return createCanvasOverlay(map, wavePoints, (val) =>
+      getColorForValue(val, minVal, maxVal, 'htsgwsfc'),
+    );
   } catch (error) {
     console.error('Error adding wave layer to map:', error);
     return () => {};

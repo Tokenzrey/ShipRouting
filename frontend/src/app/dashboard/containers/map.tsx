@@ -28,6 +28,11 @@ import {
 } from '../components/mapLayer';
 import { updateDynamicGridLayer } from '../components/OverlayHandler';
 import { addWaveLayerToMap } from '../components/AnimateHandler';
+import {
+  initializeCanvasLayers,
+  addRouteLayerToMap,
+} from '../components/createCanvasLayers';
+import { calculateDistanceAndDuration } from '@/components/nav-main';
 
 // UI Components
 import { SlidersVertical, Info } from 'lucide-react';
@@ -52,9 +57,18 @@ import Typography from '@/components/Typography';
 // Utilities and Constants
 import { MAPTILER_API_KEY, CONFIG } from '@/constant/map';
 import { fromLonLatExtent } from '@/lib/utils';
-import { useRouteStore } from '@/lib/GlobalState/state';
+import { Keyframes, useRouteStore } from '@/lib/GlobalState/state';
 import { debounce } from 'lodash';
 import VectorTileLayer from 'ol/layer/VectorTile';
+import { getLegendSteps } from '@/components/legend';
+import { getColorForValue } from '../components/OverlayHandler';
+
+import { WAVE_HEIGHT_THRESHOLDS } from '../components/OverlayHandler';
+
+type WaveRange = {
+  min: number;
+  max: number;
+} | null;
 
 const MeterGridMap: React.FC = () => {
   const mapRef = useRef<HTMLDivElement | null>(null);
@@ -62,6 +76,7 @@ const MeterGridMap: React.FC = () => {
   const mapInstanceRef = useRef<Map | null>(null);
   const locationLayerRef = useRef<VectorLayer | null>(null);
   const clickHandlerRef = useRef<MapClickHandler | null>(null);
+  const animationCleanupRef = useRef<(() => void) | null>(null);
 
   const [loading, setLoading] = useState(false);
   const [popupData, setPopupData] = useState<PopupData | null>(null);
@@ -80,15 +95,38 @@ const MeterGridMap: React.FC = () => {
     '00',
   );
   const [isCurrentDate, setIsCurrentDate] = useState(true);
+  const [waveRangeOverlay, setWaveRangeOverlay] = useState<WaveRange>(null);
+  const [waveRangeAnim, setWaveRangeAnim] = useState<WaveRange>(null);
+  const [optimalKeyframes, setOptimalKeyframes] = useState<Keyframes | null>(
+    null,
+  );
+  const [safestKeyframes, setSafestKeyframes] = useState<Keyframes | null>(
+    null,
+  );
 
-  const locations = useRouteStore((state) => state.locations);
   const optimalRoute = useRouteStore((state) => state.optimalRoute);
   const activeRoute = useRouteStore((state) => state.activeRoute);
   const safestRoute = useRouteStore((state) => state.safestRoute);
+  const RouteSelected = useRouteStore((state) => state.routeSelected);
 
+  const { setIsCalculating } = useRouteStore();
   const currentAnimationIndex = useRouteStore(
     (state) => state.currentAnimationIndex,
   );
+  const {
+    locations,
+    shipSpeed,
+    loadCondition,
+    isCalculating,
+    setOptimalDistance,
+    setSafestDistance,
+    setOptimalDuration,
+    setSafestDuration,
+    setOptimalRoute,
+    setSafestRoute,
+    resetKeyframes,
+    setRouteSelected,
+  } = useRouteStore();
 
   // Constants for z-index management
   const Z_INDEX = {
@@ -108,7 +146,6 @@ const MeterGridMap: React.FC = () => {
     }
   };
 
-  // First useEffect - Style changes
   useEffect(() => {
     if (!mapInstanceRef.current) return;
 
@@ -326,6 +363,14 @@ const MeterGridMap: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    if (!mapInstanceRef.current) return;
+
+    const map = mapInstanceRef.current;
+
+    initializeCanvasLayers(map, shipSpeed, loadCondition);
+  }, [shipSpeed, loadCondition]);
+
+  useEffect(() => {
     syncRouteLayers();
   }, [optimalRoute, safestRoute, locations]);
 
@@ -346,6 +391,7 @@ const MeterGridMap: React.FC = () => {
             map,
             animationEnabled,
             cleanupWaveLayer,
+            (range) => setWaveRangeAnim(range),
           );
         } catch (error) {
           console.error('Failed to add wave layer:', error);
@@ -398,35 +444,39 @@ const MeterGridMap: React.FC = () => {
     const map = mapInstanceRef.current;
     if (!map || !overlayType) return;
 
-    setLoadingOverlayType(true); // Start loading state
+    setLoadingOverlayType(true);
 
-    // Cleanup reference to manage dynamic overlay removal
     let cleanupOverlayLayer: (() => void) | null = null;
 
     const updateOverlay = async () => {
       try {
-        // Update the grid layer and manage cleanup
-        cleanupOverlayLayer = await updateDynamicGridLayer(
+        const result = await updateDynamicGridLayer(
           map,
           overlayType,
           date,
           isCurrentDate,
           selectedTime,
-          cleanupOverlayLayer, // Pass previous cleanup function
+          cleanupOverlayLayer,
         );
+        if (result) {
+          cleanupOverlayLayer = result.cleanup;
+          setWaveRangeOverlay({ min: result.minValue, max: result.maxValue }); // simpan
+        } else {
+          cleanupOverlayLayer = null;
+          setWaveRangeOverlay(null);
+        }
       } catch (error) {
         console.error('Error updating overlay layer:', error);
       } finally {
-        setLoadingOverlayType(false); // End loading state
+        setLoadingOverlayType(false);
       }
     };
 
     updateOverlay();
 
-    // Clean up overlay when component unmounts or overlayType changes
     return () => {
       if (cleanupOverlayLayer) {
-        cleanupOverlayLayer(); // Remove the overlay if present
+        cleanupOverlayLayer();
         cleanupOverlayLayer = null;
       }
     };
@@ -457,6 +507,222 @@ const MeterGridMap: React.FC = () => {
     }
   }, [locations]);
 
+  useEffect(() => {
+    // Perbaiki penggunaan ternary operator dengan nilai default
+    const useModel =
+      RouteSelected === 'normal'
+        ? false
+        : RouteSelected === 'safest'
+          ? true
+          : false;
+
+    if (RouteSelected === 'normal' || RouteSelected === 'safest') {
+      const currentRouteCondition: 'normal' | 'safest' = RouteSelected;
+
+      calculateDistanceAndDuration(
+        useModel,
+        locations,
+        shipSpeed,
+        loadCondition,
+        currentRouteCondition,
+        resetKeyframes,
+        setOptimalKeyframes,
+        setSafestKeyframes,
+        setOptimalDistance,
+        setOptimalDuration,
+        setOptimalRoute,
+        setSafestDistance,
+        setSafestDuration,
+        setSafestRoute,
+        isCalculating,
+        setRouteSelected,
+      );
+    }
+  }, [RouteSelected, isCalculating]);
+
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    if (RouteSelected && !isCalculating) {
+      // Tentukan keyframes berdasarkan RouteSelected
+      let keyframes: Keyframes | null = null;
+
+      if (
+        RouteSelected === 'normal' &&
+        optimalKeyframes?.final_path &&
+        optimalKeyframes.partial_path &&
+        optimalKeyframes.all_edges
+      ) {
+        keyframes = {
+          final_path: {
+            path: optimalKeyframes?.final_path.path,
+            distance: optimalKeyframes?.final_path.distance,
+          },
+          partial_path: optimalKeyframes?.partial_path,
+          all_edges: optimalKeyframes.all_edges,
+        };
+      } else if (
+        RouteSelected === 'safest' &&
+        safestKeyframes?.final_path &&
+        safestKeyframes?.partial_path &&
+        safestKeyframes.all_edges
+      ) {
+        keyframes = {
+          final_path: {
+            path: safestKeyframes?.final_path.path,
+            distance: safestKeyframes?.final_path.distance,
+          },
+          partial_path: safestKeyframes?.partial_path,
+          all_edges: safestKeyframes.all_edges,
+        };
+      }
+
+      if (keyframes) {
+        // Panggil addRouteLayerToMap dengan keyframes yang sesuai
+        console.log('Adding route layer with keyframes:', keyframes);
+        addRouteLayerToMap(map, keyframes, animationCleanupRef.current)
+          .then((cleanup) => {
+            // Simpan fungsi cleanup untuk animasi berikutnya
+            animationCleanupRef.current = cleanup;
+          })
+          .catch((error) => {
+            console.error('Error animating keyframes:', error);
+          });
+      }
+    }
+
+    // Cleanup ketika component unmount atau sebelum animasi baru dimulai
+    return () => {
+      if (animationCleanupRef.current) {
+        animationCleanupRef.current();
+        animationCleanupRef.current = null;
+      }
+    };
+  }, [RouteSelected, isCalculating, optimalRoute, safestRoute]);
+
+  function renderOverlayLegend() {
+    if (overlayType === 'none') {
+      return (
+        <div className='mt-3'>
+          <h4 className='font-bold'>Grid Legend</h4>
+          <p>No overlay selected.</p>
+        </div>
+      );
+    }
+
+    if (waveRangeOverlay) {
+      const steps = getLegendSteps(
+        waveRangeOverlay.min,
+        waveRangeOverlay.max,
+        4, // 4 interval
+        overlayType,
+        getColorForValue,
+      );
+
+      return (
+        <div className='mt-3'>
+          <h4 className='font-bold'>Dynamic Grid Legend</h4>
+          <ul className='mt-1 space-y-1'>
+            {steps.map((step, idx) => (
+              <li key={idx} className='flex items-center'>
+                <span
+                  className='mr-2 inline-block h-4 w-4'
+                  style={{ backgroundColor: step.color }}
+                />
+                <span>
+                  {step.from.toFixed(2)} – {step.to.toFixed(2)}
+                  {overlayType === 'htsgwsfc' ? ' m' : ' s'}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      );
+    } else {
+      // Tidak ada data, gunakan rentang default
+      const defaultMin = 0;
+      const defaultMax = 10;
+      const steps = getLegendSteps(
+        defaultMin,
+        defaultMax,
+        4, // 4 interval
+        overlayType,
+        getColorForValue,
+      );
+
+      return (
+        <div className='mt-3'>
+          <h4 className='font-bold'>Dynamic Grid Legend</h4>
+          <ul className='mt-1 space-y-1'>
+            {steps.map((step, idx) => (
+              <li key={idx} className='flex items-center'>
+                <span
+                  className='mr-2 inline-block h-4 w-4'
+                  style={{ backgroundColor: step.color }}
+                />
+                <span>
+                  {step.from.toFixed(2)} – {step.to.toFixed(2)}
+                  {overlayType === 'htsgwsfc' ? ' m' : ' s'}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className='mt-2 text-gray-600'>No data available.</p>
+        </div>
+      );
+    }
+  }
+
+  function renderAnimLegend() {
+    if (!animationEnabled) return null;
+
+    return (
+      <div className={overlayType !== 'none' ? 'mt-3' : ''}>
+        <Typography
+          className='text-typo-normal-main'
+          weight='bold'
+          variant='h4'
+        >
+          Wave Legend
+        </Typography>
+        <ul className='mt-1 space-y-1'>
+          {/* Calm */}
+          <li className='flex items-center'>
+            <span className='mr-2 inline-block h-4 w-4 bg-[rgba(135,206,250,0.9)]'></span>
+            <Typography variant='t2' className='text-typo-normal-main'>
+              {`Calm (< ${WAVE_HEIGHT_THRESHOLDS.CALM} m)`}
+            </Typography>
+          </li>
+
+          {/* Moderate */}
+          <li className='flex items-center'>
+            <span className='mr-2 inline-block h-4 w-4 bg-[rgba(255,128,0,0.9)]'></span>
+            <Typography variant='t2' className='text-typo-normal-main'>
+              {`Moderate (${WAVE_HEIGHT_THRESHOLDS.CALM} - ${WAVE_HEIGHT_THRESHOLDS.MODERATE} m)`}
+            </Typography>
+          </li>
+
+          {/* High */}
+          <li className='flex items-center'>
+            <span className='mr-2 inline-block h-4 w-4 bg-[rgba(255,0,128,0.9)]'></span>
+            <Typography variant='t2' className='text-typo-normal-main'>
+              {`High (${WAVE_HEIGHT_THRESHOLDS.MODERATE} - ${WAVE_HEIGHT_THRESHOLDS.HIGH} m)`}
+            </Typography>
+          </li>
+
+          {/* Very High */}
+          <li className='flex items-center'>
+            <span className='mr-2 inline-block h-4 w-4 bg-[rgba(128,0,255,0.9)]'></span>
+            <Typography variant='t2' className='text-typo-normal-main'>
+              {`Very High (≥ ${WAVE_HEIGHT_THRESHOLDS.HIGH} m)`}
+            </Typography>
+          </li>
+        </ul>
+      </div>
+    );
+  }
+
   return (
     <>
       {/* Map Container */}
@@ -483,164 +749,8 @@ const MeterGridMap: React.FC = () => {
             </button>
           </PopoverTrigger>
           <PopoverContent className='mr-3 w-[240px] rounded-md bg-white p-2 shadow-lg'>
-            {(overlayType !== 'none' || animationEnabled) && (
-              <>
-                {overlayType !== 'none' && (
-                  <div>
-                    <Typography
-                      className='text-typo-normal-main'
-                      weight='bold'
-                      variant='h4'
-                    >
-                      Grid Legend
-                    </Typography>
-                    <ul className='mt-1 space-y-1'>
-                      {overlayType === 'htsgwsfc' && (
-                        <>
-                          <li className='flex items-center'>
-                            <span
-                              className='mr-2 inline-block h-4 w-4'
-                              style={{
-                                backgroundColor: 'rgba(220, 80, 50, 0.8)',
-                              }}
-                            ></span>
-                            <Typography
-                              variant='t2'
-                              className='text-typo-normal-main'
-                            >
-                              High (Dark Red - Orange Gradient)
-                            </Typography>
-                          </li>
-                          <li className='flex items-center'>
-                            <span
-                              className='mr-2 inline-block h-4 w-4'
-                              style={{
-                                backgroundColor: 'rgba(220, 150, 80, 0.8)',
-                              }}
-                            ></span>
-                            <Typography
-                              variant='t2'
-                              className='text-typo-normal-main'
-                            >
-                              Moderate (Orange - Yellow Gradient)
-                            </Typography>
-                          </li>
-                          <li className='flex items-center'>
-                            <span
-                              className='mr-2 inline-block h-4 w-4'
-                              style={{
-                                backgroundColor: 'rgba(220, 200, 120, 0.8)',
-                              }}
-                            ></span>
-                            <Typography
-                              variant='t2'
-                              className='text-typo-normal-main'
-                            >
-                              Low (Yellowish Gradient)
-                            </Typography>
-                          </li>
-                        </>
-                      )}
-                      {overlayType === 'perpwsfc' && (
-                        <>
-                          <li className='flex items-center'>
-                            <span
-                              className='mr-2 inline-block h-4 w-4'
-                              style={{
-                                backgroundColor: 'rgba(30, 120, 180, 0.8)',
-                              }}
-                            ></span>
-                            <Typography
-                              variant='t2'
-                              className='text-typo-normal-main'
-                            >
-                              High (Teal - Dark Blue Gradient)
-                            </Typography>
-                          </li>
-                          <li className='flex items-center'>
-                            <span
-                              className='mr-2 inline-block h-4 w-4'
-                              style={{
-                                backgroundColor: 'rgba(60, 160, 120, 0.8)',
-                              }}
-                            ></span>
-                            <Typography
-                              variant='t2'
-                              className='text-typo-normal-main'
-                            >
-                              Moderate (Teal - Green Gradient)
-                            </Typography>
-                          </li>
-                          <li className='flex items-center'>
-                            <span
-                              className='mr-2 inline-block h-4 w-4'
-                              style={{
-                                backgroundColor: 'rgba(120, 200, 100, 0.8)',
-                              }}
-                            ></span>
-                            <Typography
-                              variant='t2'
-                              className='text-typo-normal-main'
-                            >
-                              Low (Greenish Gradient)
-                            </Typography>
-                          </li>
-                        </>
-                      )}
-                    </ul>
-                  </div>
-                )}
-                {animationEnabled && (
-                  <div className={overlayType !== 'none' ? 'mt-3' : ''}>
-                    <Typography
-                      className='text-typo-normal-main'
-                      weight='bold'
-                      variant='h4'
-                    >
-                      Wave Legend
-                    </Typography>
-                    <ul className='mt-1 space-y-1'>
-                      <li className='flex items-center'>
-                        <span className='mr-2 inline-block h-4 w-4 bg-[rgba(135,206,250,0.9)]'></span>{' '}
-                        <Typography
-                          variant='t2'
-                          className='text-typo-normal-main'
-                        >
-                          Calm
-                        </Typography>
-                      </li>
-                      <li className='flex items-center'>
-                        <span className='mr-2 inline-block h-4 w-4 bg-[rgba(255,128,0,0.9)]'></span>{' '}
-                        <Typography
-                          variant='t2'
-                          className='text-typo-normal-main'
-                        >
-                          Moderate
-                        </Typography>
-                      </li>
-                      <li className='flex items-center'>
-                        <span className='mr-2 inline-block h-4 w-4 bg-[rgba(255,0,128,0.9)]'></span>{' '}
-                        <Typography
-                          variant='t2'
-                          className='text-typo-normal-main'
-                        >
-                          High
-                        </Typography>
-                      </li>
-                      <li className='flex items-center'>
-                        <span className='mr-2 inline-block h-4 w-4 bg-[rgba(128,0,255,0.9)]'></span>{' '}
-                        <Typography
-                          variant='t2'
-                          className='text-typo-normal-main'
-                        >
-                          Very High
-                        </Typography>
-                      </li>
-                    </ul>
-                  </div>
-                )}
-              </>
-            )}
+            {renderOverlayLegend()}
+            {renderAnimLegend()}
           </PopoverContent>
         </Popover>
       </div>

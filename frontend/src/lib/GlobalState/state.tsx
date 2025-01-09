@@ -8,7 +8,7 @@ interface Location {
   latitude: number; // Latitude koordinat
 }
 
-interface PathPoint {
+export interface PathPoint {
   Heave: number;
   Pitch: number;
   Roll: number;
@@ -20,12 +20,44 @@ interface PathPoint {
   rel_heading: number;
 }
 
+export interface BlockedEdge {
+  source_coords: [number, number]; // Koordinat awal edge
+  target_coords: [number, number]; // Koordinat akhir edge
+  isBlocked: boolean; // Apakah edge diblokir
+}
+
+export interface FinalPath {
+  path: PathPoint[];
+  distance: number;
+}
+
+export interface Keyframes {
+  partial_path: PathPoint[];
+  final_path: FinalPath;
+  all_edges: BlockedEdge[];
+}
+
+export interface Expansion {
+  coordinates: [number, number]; // [lon, lat]
+}
+
 interface RouteStore {
   locations: Location[]; // List of locations (from and destination)
   optimalDistance: number | null; // Distance for the optimal route in kilometers
   safestDistance: number | null; // Distance for the safest route in kilometers
   optimalDuration: number | null; // Duration for the optimal route in hours
   safestDuration: number | null; // Duration for the safest route in hours
+
+  // New State for Keyframes
+  optimalKeyframes: Keyframes | null;
+  safestKeyframes: Keyframes | null;
+
+  finalPath: FinalPath;
+  expansions: any[];
+  partialPath: PathPoint[];
+  blockedEdges: BlockedEdge[];
+  isCalculating: Boolean;
+  routeSelected: string;
   loadCondition: string; // Load condition (e.g., "Light", "Medium", "Heavy")
   animationState: string | null;
   currentAnimationIndex: number | null;
@@ -52,6 +84,21 @@ interface RouteStore {
   setAnimationState: (animationState: string) => void;
   setCurrentAnimationIndex: (currentAnimationIndex: number) => void;
   setActiveRoute: (activeRoute: 'safest' | 'optimal') => void;
+  setFinalPath: (path: PathPoint[], distance: number) => void;
+  setPartialPath: (path: PathPoint[]) => void;
+  addExpansions: (expansions: Expansion[]) => void;
+  setExpansions: (expansions: Expansion[]) => void;
+  setBlockedEdges: (edges: BlockedEdge[]) => void;
+  addBlockedEdge: (edge: BlockedEdge) => void;
+  setIsCalculating: (isCaluclating: Boolean) => void;
+  setRouteSelected: (routeSelected: string) => void;
+
+  // New Setters for Keyframes
+  setOptimalKeyframes: (keyframes: Keyframes) => void;
+  setSafestKeyframes: (keyframes: Keyframes) => void;
+  resetKeyframes: () => void;
+
+  clearRoutes: () => void;
 }
 
 export const useRouteStore = create(
@@ -67,10 +114,21 @@ export const useRouteStore = create(
       shipSpeed: 10, // Default to 10 knots
       optimalRoute: [],
       safestRoute: [],
+      partialPath: [],
+      finalPath: {
+        path: [],
+        distance: 0.0,
+      },
+      expansions: [],
+      blockedEdges: [],
+      isCalculating: false,
+      routeSelected: 'None',
       locationTypeToAdd: null,
       animationState: 'idle',
       currentAnimationIndex: 0,
       activeRoute: 'optimal',
+      optimalKeyframes: null,
+      safestKeyframes: null,
 
       // Location actions
       addLocation: (location) =>
@@ -108,11 +166,34 @@ export const useRouteStore = create(
       setShipSpeed: (speed) => set({ shipSpeed: speed }),
       setOptimalRoute: (route) => set({ optimalRoute: route }),
       setSafestRoute: (route) => set({ safestRoute: route }),
+      setFinalPath: (path, distance) => set({ finalPath: { path, distance } }),
       setCurrentAnimationIndex: (index) =>
         set({ currentAnimationIndex: index }),
       setAnimationState: (state) => set({ animationState: state }),
       setActiveRoute: (route: 'optimal' | 'safest') =>
         set({ activeRoute: route }),
+      setPartialPath: (path) => set({ partialPath: path }),
+      setExpansions: (expansions) => set({ expansions }),
+      addExpansions: (expansion) =>
+        set((state) => ({ expansions: [...state.expansions, ...expansion] })),
+      setBlockedEdges: (edges) => set({ blockedEdges: edges }),
+      addBlockedEdge: (edge) =>
+        set((state) => ({ blockedEdges: [...state.blockedEdges, edge] })),
+      setRouteSelected: (routeSelected) =>
+        set({ routeSelected: routeSelected }),
+      setIsCalculating: (isClaculating) =>
+        set({ isCalculating: isClaculating }),
+      setOptimalKeyframes: (keyframes) => set({ optimalKeyframes: keyframes }),
+      setSafestKeyframes: (keyframes) => set({ safestKeyframes: keyframes }),
+      resetKeyframes: () =>
+        set({ optimalKeyframes: null, safestKeyframes: null }),
+      clearRoutes: () =>
+        set({
+          optimalRoute: [],
+          safestRoute: [],
+          partialPath: [],
+          expansions: [],
+        }),
     }),
     {
       name: 'route-store', // Key for localStorage
@@ -128,7 +209,14 @@ export const useRouteStore = create(
         animationState: state.animationState,
         currentAnimationIndex: state.currentAnimationIndex,
         activeRoute: state.activeRoute,
-
+        partialPath: state.partialPath,
+        expansions: state.expansions,
+        finalPath: state.finalPath,
+        blockedEdges: state.blockedEdges,
+        routeSelected: state.routeSelected,
+        isCalculating: state.isCalculating,
+        optimalKeyframes: state.optimalKeyframes,
+        safestKeyframes: state.safestKeyframes,
         // Add placeholders for other fields to satisfy RouteStore type
         optimalRoute: state.optimalRoute,
         safestRoute: state.safestRoute,
@@ -146,6 +234,18 @@ export const useRouteStore = create(
         setCurrentAnimationIndex: () => undefined,
         setAnimationState: () => undefined,
         setActiveRoute: () => undefined,
+        setPartialPath: () => undefined,
+        setFinalPath: () => undefined,
+        addExpansions: () => undefined,
+        setExpansions: () => undefined,
+        setBlockedEdges: () => undefined,
+        addBlockedEdge: () => undefined,
+        setRouteSelected: () => undefined,
+        setIsCalculating: () => undefined,
+        setOptimalKeyframes: () => undefined,
+        setSafestKeyframes: () => undefined,
+        resetKeyframes: () => undefined,
+        clearRoutes: () => undefined,
       }),
     },
   ),

@@ -3,13 +3,17 @@ import { Extent } from 'ol/extent';
 import { fromLonLat } from 'ol/proj';
 
 // Constants
-const WAVE_HEIGHT_THRESHOLDS = {
+export const WAVE_HEIGHT_THRESHOLDS = {
   CALM: 0.5,
   MODERATE: 1.5,
   HIGH: 2.5,
 };
 
-const BATCH_SIZE = 500; // Number of cells processed per animation frame
+export const WAVE_PERIOD_THRESHOLDS = {
+  LOW: 2,
+  MEDIUM: 5,
+  HIGH: 8,
+};
 
 // Type Definitions
 interface WaveLayerData {
@@ -39,6 +43,8 @@ interface Metadata {
   dataset_url: string;
   timestamp: string;
 }
+
+export type OverlayType = 'htsgwsfc' | 'perpwsfc' | 'none';
 
 // Fetch Wave Data
 export const fetchWaveData = async (
@@ -85,12 +91,16 @@ export const fetchWaveData = async (
 };
 
 // Get Color for Value
-function getColorForValue(
+export function getColorForValue(
   value: number,
   minValue: number,
   maxValue: number,
-  overlayType: 'htsgwsfc' | 'perpwsfc',
+  overlayType: OverlayType,
 ): string {
+  if (overlayType === 'none' || maxValue <= minValue) {
+    // fallback: misal warna abu
+    return 'rgba(128, 128, 128, 0.8)';
+  }
   const ratio = (value - minValue) / (maxValue - minValue || 1);
 
   if (overlayType === 'htsgwsfc') {
@@ -112,6 +122,8 @@ function getColorForValue(
     const b = Math.round(150 + 50 * ratio); // Slightly brighter purple
     return `rgba(${r},${g},${b},0.8)`; // Slightly transparent for overlay effect
   }
+  // Warna default jika tipe overlay tidak dikenali
+  return 'rgba(128, 128, 128, 0.8)';
 }
 
 function renderGridToCanvas(
@@ -241,25 +253,32 @@ function renderGridToCanvas(
 }
 
 // Update Dynamic Grid Layer
-export const updateDynamicGridLayer = async (
+export async function updateDynamicGridLayer(
   map: OlMap,
   overlayType: 'htsgwsfc' | 'perpwsfc' | 'none',
   date: Date,
   isCurrentDate: boolean,
   selectedTime: '00' | '06' | '12' | '18',
   previousCleanup: (() => void) | null,
-): Promise<() => void | null> => {
+): Promise<{
+  cleanup: () => void;
+  minValue: number;
+  maxValue: number;
+} | null> {
   if (previousCleanup) {
     previousCleanup();
   }
+
+  // If none, remove the overlay and return null
   if (!overlayType || overlayType === 'none') {
     const canvas = map.getTargetElement()?.querySelector('.canvas-overlay');
     if (canvas) {
       canvas.remove();
     }
-    return () => {};
+    return null;
   }
 
+  // fetch wave data
   const waveData = await fetchWaveData(
     overlayType,
     date,
@@ -268,11 +287,23 @@ export const updateDynamicGridLayer = async (
   );
   if (!waveData) {
     console.error(`Failed to fetch wave data for ${overlayType}`);
-    return () => {};
+    return null;
   }
 
-  return renderGridToCanvas(map, waveData, overlayType);
-};
+  // Flatten to get min and max
+  const values = waveData.data.flat();
+  const minVal = Math.min(...values);
+  const maxVal = Math.max(...values);
+
+  // render ke canvas
+  const cleanup = renderGridToCanvas(map, waveData, overlayType);
+
+  return {
+    cleanup,
+    minValue: minVal,
+    maxValue: maxVal,
+  };
+}
 
 // Schedule Wave Overlay Update
 export const scheduleWaveOverlayUpdate = (

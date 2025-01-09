@@ -26,29 +26,64 @@ ChartJS.register(
 
 // Definisi tipe properti untuk komponen LineChart
 interface LineChartProps {
-  height?: number; // Tinggi grafik (default: 90)
+  height?: number; // Tinggi grafik (default: 300)
   dataset: Array<{
     label: string; // Label dataset (contoh: suhu, tekanan, dll.)
     data: number[]; // Data array untuk setiap dataset
     color: string; // Warna garis dataset
     yAxisID: string; // ID sumbu y untuk dataset
   }>;
+  stepPercentage?: number; // Interval persentase antar label (default: 5%)
 }
 
+// Fungsi utilitas untuk menghasilkan label dinamis
+const generateLabels = (
+  length: number,
+  stepPercentage: number = 5,
+): string[] => {
+  if (length < 2) {
+    return ['arrival', 'Departure'];
+  }
+
+  const labels: string[] = ['arrival'];
+  const numSteps = Math.floor(100 / stepPercentage);
+  const stepSize = Math.floor(length / numSteps);
+
+  for (let i = 1; i < numSteps; i++) {
+    const index = i * stepSize;
+    if (index < length - 1) {
+      // Contoh label: "5%", "10%", ..., "95%"
+      labels.push(`${i * stepPercentage}%`);
+    }
+  }
+
+  labels.push('Departure');
+  return labels;
+};
+
 // Komponen LineChart
-export default function LineChart({ height = 90, dataset }: LineChartProps) {
+const LineChart: React.FC<LineChartProps> = ({
+  height = 300,
+  dataset,
+  stepPercentage = 5,
+}) => {
+  // Validasi bahwa semua dataset memiliki panjang data yang sama
+  const dataLength = dataset.length > 0 ? dataset[0].data.length : 0;
+  const allSameLength = dataset.every(
+    (item) => item.data.length === dataLength,
+  );
+
+  if (!allSameLength) {
+    console.error('Semua dataset harus memiliki panjang data yang sama.');
+    return null;
+  }
+
+  // Menghasilkan label dinamis berdasarkan panjang dataset dan interval 5%
+  const labels = generateLabels(dataLength, stepPercentage);
+
   // Konfigurasi data untuk grafik
   const data: ChartData<'line'> = {
-    labels: [
-      'arrival',
-      '10 nm',
-      '20 nm',
-      '30 nm',
-      '40 nm',
-      '50 nm',
-      '60 nm',
-      'Depature',
-    ], // Label sumbu x
+    labels: labels, // Label sumbu x yang dihasilkan secara dinamis
     datasets: dataset.map((item) => ({
       label: item.label, // Label dataset
       data: item.data, // Data untuk dataset
@@ -114,4 +149,6 @@ export default function LineChart({ height = 90, dataset }: LineChartProps) {
       <Line data={data} options={options} />
     </div>
   );
-}
+};
+
+export default LineChart;
