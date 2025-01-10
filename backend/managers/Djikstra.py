@@ -451,32 +451,49 @@ class RouteOptimizer:
 
         logger.info(f"Done precompute block => {time.time()-start:.2f}s for {total} edges")
 
-    # -------------- get_blocked_edges_in_view --------------
     def get_blocked_edges_in_view(
         self,
-        view_bounds: Tuple[float,float,float,float],
-        MAX_EDGES: int=100_000
-    ) -> List[Dict[str,Any]]:
+        view_bounds: Tuple[float, float, float, float],
+        MAX_EDGES: int = 300_000
+    ) -> List[Dict[str, Any]]:
         """
         Query bounding box from R-tree => read g.es[eid]["blocked"]
+        Mengembalikan edge yang TIDAK diblokir (isBlocked=False).
         """
         min_lon, min_lat, max_lon, max_lat = view_bounds
+
+        # 1. Cari kandidat edge ID yang intersect bounding box
         cands = list(self.edge_spatial_index.intersection(view_bounds))
-        logger.info(f"Candidate edges => {len(cands)}")
+        logger.info(f"[get_blocked_edges_in_view] Candidate edges: {len(cands)}")
 
         g = self.igraph_graph
-        results=[]
-        for eid in cands[:MAX_EDGES]:
+        results = []
+
+        # 2. Iterasi kandidat
+        #    Hentikan jika sudah mencapai MAX_EDGES.
+        count = 0
+        for eid in cands:
+            if count >= MAX_EDGES:
+                break
+
             e = g.es[eid]
-            s = g.vs[e.source]
-            t = g.vs[e.target]
-            results.append({
-                "edge_id": eid,
-                "source_coords": (s["lon"], s["lat"]),
-                "target_coords": (t["lon"], t["lat"]),
-                "isBlocked": bool(e["blocked"])
-            })
-        logger.info(f"Return edges => {len(results)}")
+
+            # Pastikan sudah ada atribut "blocked" di e:
+            # - e["blocked"] seharusnya hasil update di tempat lain
+            # - atau diset via batch process => e["blocked"] = True/False
+            if not e["blocked"]:  # Hanya ambil edge yang TIDAK diblokir
+                s = g.vs[e.source]
+                t = g.vs[e.target]
+
+                results.append({
+                    "edge_id": eid,
+                    "source_coords": (s["lon"], s["lat"]),
+                    "target_coords": (t["lon"], t["lat"]),
+                    "isBlocked": False,  # Sudah pasti False, karena `not e["blocked"]`
+                })
+                count += 1
+
+        logger.info(f"[get_blocked_edges_in_view] Return edges => {len(results)}")
         return results
 
     # -------------- Caching Dijkstra --------------
