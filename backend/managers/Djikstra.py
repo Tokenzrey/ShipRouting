@@ -4,6 +4,7 @@ import hashlib
 import logging
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
+import heapq  # untuk Dijkstra priority queue
 
 import numpy as np
 import pandas as pd
@@ -195,7 +196,7 @@ class RouteOptimizer:
             compression_level=0
         )
 
-        # Pastikan atribut di igraph
+        # Pastikan atribut di igraph (edges)
         for attr in ["roll", "heave", "pitch", "isBlocked"]:
             if attr not in self.igraph_graph.es.attributes():
                 if attr == "isBlocked":
@@ -259,7 +260,7 @@ class RouteOptimizer:
         g.es["weight"] = w_list
         g.es["bearing"] = b_list
 
-        # Inisialisasi roll, heave, pitch, isBlocked
+        # Inisialisasi roll, heave, pitch, isBlocked di edges
         if "roll" not in g.es.attributes():
             g.es["roll"] = [0.0] * g.ecount()
         if "heave" not in g.es.attributes():
@@ -547,15 +548,15 @@ class RouteOptimizer:
             # Skip immediately if not blocked
             if not edge["isBlocked"]:
                 continue
-                
+
             # Single lookup for vertices
             source = g.vs[edge.source]
             target = g.vs[edge.target]
-            
+
             # Single lookup for coordinates
             s_lon, s_lat = source["lon"], source["lat"]
             t_lon, t_lat = target["lon"], target["lat"]
-            
+
             # Single bounds check
             if ((min_lon <= s_lon <= max_lon and min_lat <= s_lat <= max_lat) or 
                 (min_lon <= t_lon <= max_lon and min_lat <= t_lat <= max_lat)):
@@ -575,7 +576,7 @@ class RouteOptimizer:
         return edges_in_view
 
     # ----------------------------------------------------------
-    #   find_shortest_path => with Dijkstra caching
+    #   find_shortest_path => more optimal Dijkstra
     # ----------------------------------------------------------
     def find_shortest_path(
         self,
@@ -588,7 +589,13 @@ class RouteOptimizer:
         """
         1. Coba loadDijkstra.
         2. Jika ketemu => return.
-        3. Jika tidak => check isBlocked => set weight=inf => Dijkstra => save => return
+        3. Jika tidak => check isBlocked => set weight=inf => Dijkstra (optimized)
+           - tetap melebarkan ke node lain (meski end_idx tercapai)
+           - hentikan ekspansi jika current_dist > dist[end_idx]
+           - catat partial paths (ekspansi) hanya jika ada perbaikan jarak
+        4. save => return
+
+        Return: (path_data, distance, partial_paths, [])
         """
         # Coba load dari cache
         cached = self.load_dijkstra_result(start, end, use_model, ship_speed, condition)
@@ -596,47 +603,128 @@ class RouteOptimizer:
             logger.info("Using cached dijkstra from local JSON => returning.")
             return cached["path"], cached["distance"], cached["partial_paths"], cached["all_edges"]
 
-        # If no cache => proceed
         wave_data_id = self._get_wave_data_identifier()
         gcopy = self.igraph_graph.copy()
 
         # ============ Gunakan isBlocked => set weight=inf jika use_model
         if use_model:
-            blocked_array = np.array([ bool(e["isBlocked"]) for e in gcopy.es ])
+            blocked_array = np.array([bool(e["isBlocked"]) for e in gcopy.es])
             gcopy.es["weight"] = np.where(blocked_array, float('inf'), gcopy.es["weight"])
 
-        # run dijkstra
         start_idx = self.grid_locator.find_nearest_node(*start)
         end_idx = self.grid_locator.find_nearest_node(*end)
         if start_idx < 0 or end_idx < 0:
             logger.error("Invalid start or end index => no path.")
             return [], 0.0, [], []
 
-        try:
-            sp = gcopy.get_shortest_paths(start_idx, to=end_idx, weights="weight", output="vpath")[0]
-            if not sp:
-                logger.warning("No path found => returning empty.")
-                return [], 0.0, [], []
-            distance = gcopy.shortest_paths(source=start_idx, target=end_idx, weights="weight")[0][0]
-        except Exception as e:
-            logger.error(f"Error during dijkstra => {e}")
-            return [], 0.0, [], []
+        # ----------------------
+        #  Optimized Dijkstra
+        # ----------------------
+        dist = [float('inf')] * gcopy.vcount()
+        parent = [-1] * gcopy.vcount()
+        dist[start_idx] = 0.0
 
-        # build path_data
+        # Priority queue => (distance, node)
+        pq = [(0.0, start_idx)]
+
+        # partial_paths => menampung jalur START -> v 
+        # (hanya saat ada perbaikan jarak)
+        partial_paths: List[List[dict]] = []
+
+        while pq:
+            current_dist, u = heapq.heappop(pq)
+            # Jika jarak ini sudah melebihi jarak end_idx, hentikan ekspansi
+            if current_dist > dist[end_idx]:
+                continue
+            # Jika jarak ini bukan jarak teraktual => skip
+            if current_dist > dist[u]:
+                continue
+
+            # Simpan partial path (ekspansi) => 
+            path_u = self._reconstruct_path(gcopy, parent, u)
+            expanded_path = self._build_path_data(gcopy, path_u)
+            partial_paths.append(expanded_path)
+
+            # Ekspansi neighbors
+            neighbors = gcopy.neighbors(u, mode="ALL")
+            for v in neighbors:
+                e_id = gcopy.get_eid(u, v)
+                w = gcopy.es[e_id]["weight"]
+                if w == float('inf'):
+                    continue  # blocked, skip
+
+                new_dist = current_dist + w
+                if new_dist < dist[v]:
+                    dist[v] = new_dist
+                    parent[v] = u
+                    # Tambahkan ke PQ
+                    heapq.heappush(pq, (new_dist, v))
+
+        # Reconstruct final path from start_idx to end_idx
+        if dist[end_idx] == float('inf'):
+            logger.warning("No path found => returning empty.")
+            return [], 0.0, partial_paths, []
+
+        distance = dist[end_idx]
+        final_nodes = self._reconstruct_path(gcopy, parent, end_idx)
+        path_data = self._build_path_data(gcopy, final_nodes)
+
+        # Simpan ke cache
+        self.save_dijkstra_result(
+            start, end, use_model, ship_speed, condition, path_data, distance, partial_paths
+        )
+        return path_data, distance, partial_paths, []
+
+    # ----------------------------------------------------------
+    #   Helper: Reconstruct Path (array of node indices)
+    # ----------------------------------------------------------
+    def _reconstruct_path(self, g: ig.Graph, parent: List[int], target_idx: int) -> List[int]:
+        """
+        Rekonstruksi path (list of node indices) dari root
+        dengan parent[] ke target_idx.
+        """
+        path = []
+        cur = target_idx
+        while cur != -1:
+            path.append(cur)
+            cur = parent[cur]
+        return path[::-1]  # dibalik
+
+    # ----------------------------------------------------------
+    #   Helper: Build Path Data => [ {node_id, coords, wave, roll, etc}, ...]
+    # ----------------------------------------------------------
+    def _build_path_data(self, g: ig.Graph, node_list: List[int]) -> List[dict]:
+        """
+        Membangun array of dict untuk jalur tertentu.
+        Memasukkan wave_data (dari wave_data_locator) dan
+        roll/heave/pitch (dari edge di jalur).
+        """
+        if not node_list:
+            return []
+
         path_data = []
-        for i, node_i in enumerate(sp):
-            vx = gcopy.vs[node_i]
+        for i, node_i in enumerate(node_list):
+            vx = g.vs[node_i]
             coords = (vx["lon"], vx["lat"])
+
+            # Wave data di vertex
             wave_data = {}
             try:
                 wave_data = self.wave_data_locator.get_wave_data(coords)
             except:
                 pass
 
-            roll = vx["roll"] if "roll" in vx.attributes() else 0.0
-            heave = vx["heave"] if "heave" in vx.attributes() else 0.0
-            pitch = vx["pitch"] if "pitch" in vx.attributes() else 0.0
-            # heading optional
+            # roll/heave/pitch => ambil dari edge (kecuali node pertama, set 0)
+            if i == 0:
+                roll = 0.0
+                heave = 0.0
+                pitch = 0.0
+            else:
+                edge_id = g.get_eid(node_list[i - 1], node_i)
+                roll = g.es[edge_id]["roll"]
+                heave = g.es[edge_id]["heave"]
+                pitch = g.es[edge_id]["pitch"]
+
             path_data.append({
                 "node_id": vx["name"],
                 "coordinates": list(coords),
@@ -648,30 +736,4 @@ class RouteOptimizer:
                 "Pitch": float(pitch),
                 "rel_heading": 0.0
             })
-
-        # build partial_paths
-        partial_paths = []
-        for i in range(1, len(sp)):
-            partial_path = []
-            for node_id in sp[: i + 1]:
-                vx = gcopy.vs[node_id]
-                coords = (vx["lon"], vx["lat"])
-                wave_data = {}
-                try:
-                    wave_data = self.wave_data_locator.get_wave_data(coords)
-                except:
-                    pass
-                partial_path.append({
-                    "node_id": vx["name"],
-                    "coordinates": list(coords),
-                    "htsgwsfc": float(wave_data.get("htsgwsfc", 0.0)),
-                    "perpwsfc": float(wave_data.get("perpwsfc", 0.0)),
-                    "dirpwsfc": float(wave_data.get("dirpwsfc", 0.0))
-                })
-            partial_paths.append(partial_path)
-
-        # Simpan ke cache
-        self.save_dijkstra_result(
-            start, end, use_model, ship_speed, condition, path_data, distance, partial_paths
-        )
-        return path_data, distance, partial_paths, []
+        return path_data
