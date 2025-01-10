@@ -189,6 +189,7 @@ export function NavMain() {
     setLoadCondition,
     resetKeyframes,
     setRouteSelected,
+    setIsUpdate,
   } = useRouteStore();
 
   const [routeCondition, setRouteCondition] = React.useState<
@@ -198,9 +199,11 @@ export function NavMain() {
   // Handle button clicks
   const handleNormalClick = () => {
     setRouteCondition('normal');
+    console.log(isCalculating);
     // calculateDistanceAndDuration(false);
     if (!isCalculating) {
       setRouteSelected('normal');
+      setIsUpdate(true);
     }
   };
 
@@ -209,6 +212,7 @@ export function NavMain() {
     // calculateDistanceAndDuration(true);
     if (!isCalculating) {
       setRouteSelected('safest');
+      setIsUpdate(true);
     }
   };
 

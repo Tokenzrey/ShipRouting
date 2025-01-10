@@ -1,21 +1,26 @@
 // src/app/dashboard/components/createCanvasLayers.ts
 
-import { Map as OlMap, View } from 'ol';
+import { Map as OlMap } from 'ol';
 import { fromLonLat, toLonLat } from 'ol/proj';
+import { Coordinate } from 'ol/coordinate';
 import {
   PathPoint,
   BlockedEdge,
   Keyframes,
   useRouteStore,
 } from '@/lib/GlobalState/state';
-import axios from 'axios'; // Untuk melakukan request API
-import { Coordinate } from 'ol/coordinate';
+import axios from 'axios';
 import { debounce } from 'lodash';
 
 // Constants
-const KM_TO_DEGREE = 1 / 111.32;
+const EDGE_BATCH_DELAY = 100;
+const PARTIAL_PATH_DELAY = 100;
+const FINAL_PATH_DELAY = 1000;
+const MAX_EDGES = 100000;
 
-// Utility function to create a Canvas element for visualization layers
+/**
+ * Utility function to create a Canvas element for visualization layers.
+ */
 const createCanvasElement = (
   map: OlMap,
   className: string,
@@ -26,9 +31,12 @@ const createCanvasElement = (
   const targetElement = map.getTargetElement();
   if (!targetElement) throw new Error('Map target element is undefined');
 
-  const existingCanvas = targetElement.querySelector(`canvas.${className}`);
+  let existingCanvas = targetElement.querySelector(
+    `canvas.${className}`,
+  ) as HTMLCanvasElement;
+
   if (existingCanvas) {
-    existingCanvas.remove(); // Remove existing canvas if any
+    existingCanvas.remove();
   }
 
   const canvas = document.createElement('canvas');
@@ -40,7 +48,7 @@ const createCanvasElement = (
     width: '100%',
     height: '100%',
     pointerEvents: 'none',
-    zIndex: '3000', // Tetapkan z-index tinggi
+    zIndex: '3000',
   });
 
   canvas.width = mapSize[0];
@@ -51,7 +59,7 @@ const createCanvasElement = (
 };
 
 /**
- * Draws a blocked or normal edge based on the `isBlocked` flag.
+ * Function to draw a blocked or normal edge.
  */
 const drawBlockedEdge = (
   map: OlMap,
@@ -75,132 +83,35 @@ const drawBlockedEdge = (
   context.moveTo(sourcePixel[0], sourcePixel[1]);
   context.lineTo(targetPixel[0], targetPixel[1]);
 
-  if (edge.isBlocked) {
-    context.strokeStyle = '#FF0000'; // Red for blocked edges
-    context.lineWidth = 3;
-    context.setLineDash([5, 5]);
-  } else {
-    context.strokeStyle = '#00FF00'; // Green for unblocked edges
-    context.lineWidth = 2;
-    context.setLineDash([]);
-  }
+  context.strokeStyle = edge.isBlocked ? '#FF0000' : '#00FF00';
+  context.lineWidth = edge.isBlocked ? 6 : 2;
+  context.setLineDash(edge.isBlocked ? [10, 10] : []);
   context.stroke();
 };
 
 /**
- * Layer for Partial Path visualization
+ * Create Partial Path Layer
  */
 export const createPartialPathCanvas = (map: OlMap): HTMLCanvasElement => {
-  const canvas = createCanvasElement(map, 'partial-path-canvas');
-  const context = canvas.getContext('2d');
-  if (!context) throw new Error('Canvas context is undefined');
-
-  const drawPartialPath = (path: PathPoint[]) => {
-    context.clearRect(0, 0, canvas.width, canvas.height);
-    if (path.length < 2) return;
-
-    // Draw Partial Path
-    context.beginPath();
-    path.forEach((point, index) => {
-      if (!point.coordinates || point.coordinates.length !== 2) {
-        console.error('Invalid point coordinates:', point);
-        return;
-      }
-      const coord = fromLonLat(point.coordinates);
-      const pixel = map.getPixelFromCoordinate(coord);
-      if (!pixel) return;
-      index === 0
-        ? context.moveTo(pixel[0], pixel[1])
-        : context.lineTo(pixel[0], pixel[1]);
-    });
-    context.strokeStyle = '#FFA500'; // Orange for partial path
-    context.lineWidth = 3;
-    context.setLineDash([10, 10]);
-    context.stroke();
-    context.setLineDash([]);
-  };
-
-  return canvas;
+  return createCanvasElement(map, 'partial-path-canvas');
 };
 
 /**
- * Layer for Final Path visualization
+ * Create Final Path Layer
  */
 export const createFinalPathCanvas = (map: OlMap): HTMLCanvasElement => {
-  const canvas = createCanvasElement(map, 'final-path-canvas');
-  const context = canvas.getContext('2d');
-  if (!context) throw new Error('Canvas context is undefined');
-
-  const drawFinalPath = (finalPath: PathPoint[]) => {
-    context.clearRect(0, 0, canvas.width, canvas.height);
-    if (finalPath.length < 2) return;
-
-    context.beginPath();
-    finalPath.forEach((point: PathPoint, index: number) => {
-      if (!point.coordinates || point.coordinates.length !== 2) {
-        console.error('Invalid point coordinates:', point);
-        return;
-      }
-      const coord = fromLonLat(point.coordinates);
-      const pixel = map.getPixelFromCoordinate(coord);
-      if (!pixel) return;
-      index === 0
-        ? context.moveTo(pixel[0], pixel[1])
-        : context.lineTo(pixel[0], pixel[1]);
-    });
-    context.strokeStyle = '#0000FF'; // Blue for final path
-    context.lineWidth = 4;
-    context.stroke();
-
-    // Optionally, display distance or other info
-    // For example, add a text label at the end point
-    if (finalPath.length > 0) {
-      const lastPoint = finalPath[finalPath.length - 1];
-      if (!lastPoint.coordinates || lastPoint.coordinates.length !== 2) {
-        console.error('Invalid last point coordinates:', lastPoint);
-        return;
-      }
-      const coord = fromLonLat(lastPoint.coordinates);
-      const pixel = map.getPixelFromCoordinate(coord);
-      if (pixel) {
-        context.fillStyle = '#000000'; // Black text
-        context.font = '16px Arial';
-        context.fillText(
-          `${lastPoint.rel_heading?.toFixed(2) ?? 0}°`,
-          pixel[0] + 5,
-          pixel[1] - 5,
-        );
-      }
-    }
-  };
-
-  return canvas;
+  return createCanvasElement(map, 'final-path-canvas');
 };
 
 /**
- * Layer for All Edges visualization
+ * Create All Edges Layer
  */
 export const createAllEdgesCanvas = (map: OlMap): HTMLCanvasElement => {
-  const canvas = createCanvasElement(map, 'all-edges-canvas');
-  const context = canvas.getContext('2d');
-  if (!context) throw new Error('Canvas context is undefined');
-
-  /**
-   * Draws all edges. Before drawing, it clears the canvas to remove previous visualizations.
-   */
-  const drawAllEdges = (edges: BlockedEdge[]) => {
-    context.clearRect(0, 0, canvas.width, canvas.height);
-    edges.forEach((edge: BlockedEdge) => {
-      drawBlockedEdge(map, context, edge);
-    });
-  };
-
-  return canvas;
+  return createCanvasElement(map, 'all-edges-canvas');
 };
 
 /**
- * Initialize Canvas layers for route visualization.
- * @param map - OpenLayers Map object.
+ * Initialize Canvas Layers
  */
 export const initializeCanvasLayers = (
   map: OlMap,
@@ -211,55 +122,130 @@ export const initializeCanvasLayers = (
   createFinalPathCanvas(map);
   createAllEdgesCanvas(map);
 
-  // Initial fetch and draw
   fetchAndDrawBlockedEdges(map, shipSpeed, loadCondition);
 
-  // Debounced function to fetch and draw edges
-  const debouncedFetchAndDraw = debounce(() => {
+  const debouncedFetch = debounce(() => {
     fetchAndDrawBlockedEdges(map, shipSpeed, loadCondition);
-  }, 500); // 500ms delay
+  }, 500);
 
-  // Attach event listener for 'moveend' to fetch and draw edges
-  map.on('moveend', debouncedFetchAndDraw);
+  map.on('moveend', debouncedFetch);
 };
 
 /**
- * Function to animate keyframes.
- * @param map - OpenLayers Map object.
- * @param keyframes - Keyframes data.
- * @returns Cleanup function to stop animation and remove event listeners.
+ * Function to fetch blocked edges and draw them on canvas.
+ */
+export const fetchAndDrawBlockedEdges = async (
+  map: OlMap,
+  shipSpeed: number,
+  loadCondition: string,
+) => {
+  const allEdgesCanvas = document.querySelector(
+    'canvas.all-edges-canvas',
+  ) as HTMLCanvasElement;
+  const allEdgesContext = allEdgesCanvas?.getContext('2d');
+  if (!allEdgesContext) return;
+
+  const mapSize = map.getSize();
+  if (!mapSize) return;
+
+  const view = map.getView();
+  const extent = view.calculateExtent(mapSize);
+  const [minLon, minLat] = toLonLat([extent[0], extent[1]]);
+  const [maxLon, maxLat] = toLonLat([extent[2], extent[3]]);
+
+  console.log('Fetching blocked edges in view:', {
+    minLon,
+    minLat,
+    maxLon,
+    maxLat,
+    shipSpeed,
+    loadCondition,
+  });
+
+  try {
+    const response = await axios.post(
+      'http://localhost:5000/get_blocked_edges_in_view',
+      {
+        view_bounds: [minLon, minLat, maxLon, maxLat],
+        ship_speed: shipSpeed,
+        condition: loadCondition === 'ballast' ? 1 : 0,
+      },
+    );
+
+    let blockedEdges: BlockedEdge[] = response.data.blocked_edges;
+    blockedEdges = blockedEdges.slice(0, MAX_EDGES);
+
+    console.log(`Received ${blockedEdges.length} blocked edges`);
+
+    allEdgesContext.clearRect(
+      0,
+      0,
+      allEdgesCanvas.width,
+      allEdgesCanvas.height,
+    );
+
+    blockedEdges.forEach((edge, index) => {
+      console.log(`Drawing Edge ${index + 1}/${blockedEdges.length}`, edge);
+      drawBlockedEdge(map, allEdgesContext, edge);
+    });
+  } catch (error) {
+    console.error('Error fetching blocked edges:', error);
+  }
+};
+
+// Utility function to validate path point
+const isValidPathPoint = (point: any): point is PathPoint => {
+  return (
+    point &&
+    Array.isArray(point.coordinates) &&
+    point.coordinates.length === 2 &&
+    typeof point.coordinates[0] === 'number' &&
+    typeof point.coordinates[1] === 'number'
+  );
+};
+
+/**
+ * Function to animate keyframes and render paths.
  */
 export const animateKeyframes = (
   map: OlMap,
   keyframes: Keyframes,
 ): (() => void) | null => {
-  console.log('Animating keyframes:', keyframes);
-  // References to canvas elements
+  console.log('Starting animation with keyframes:', keyframes);
+
   const partialPathCanvas = document.querySelector(
     'canvas.partial-path-canvas',
   ) as HTMLCanvasElement;
   const finalPathCanvas = document.querySelector(
     'canvas.final-path-canvas',
   ) as HTMLCanvasElement;
-  const allEdgesCanvas = document.querySelector(
-    'canvas.all-edges-canvas',
-  ) as HTMLCanvasElement;
 
-  if (!partialPathCanvas || !finalPathCanvas || !allEdgesCanvas) {
+  if (!partialPathCanvas || !finalPathCanvas) {
     console.error('Canvas elements not found');
     return null;
   }
 
   const partialPathContext = partialPathCanvas.getContext('2d');
   const finalPathContext = finalPathCanvas.getContext('2d');
-  const allEdgesContext = allEdgesCanvas.getContext('2d');
 
-  if (!partialPathContext || !finalPathContext || !allEdgesContext) {
+  if (!partialPathContext || !finalPathContext) {
     console.error('Canvas contexts are undefined');
     return null;
   }
 
-  // Clear all canvases before starting
+  // Validate partial path data
+  const partialPath = Array.isArray(keyframes.partial_path)
+    ? keyframes.partial_path
+    : [];
+  if (partialPath.length === 0) {
+    console.warn('Partial path is empty or invalid');
+  }
+
+  console.log(`Total Partial Path Points: ${partialPath.length}`);
+  console.log(
+    `Total Final Path Points: ${keyframes.final_path?.path?.length || 0}`,
+  );
+
   partialPathContext.clearRect(
     0,
     0,
@@ -272,311 +258,101 @@ export const animateKeyframes = (
     finalPathCanvas.width,
     finalPathCanvas.height,
   );
-  allEdgesContext.clearRect(0, 0, allEdgesCanvas.width, allEdgesCanvas.height);
 
-  // Set isCalculating to true at the start of animation
   useRouteStore.getState().setIsCalculating(true);
+  let startTime = performance.now();
 
-  // Animation parameters
-  const edgeBatchSize = 10; // Number of edges to draw per batch
-  const edgeBatchDelay = 100; // milliseconds between edge batches
-  const partialPathDelay = 100; // 100 milliseconds delay between partial path points
-  const finalPathDelay = 1000; // 1 second delay before drawing final path
-
-  let currentEdgeIndex = 0;
-  const totalEdges = keyframes.all_edges.length;
-
-  let animationTimeouts: NodeJS.Timeout[] = [];
-
-  // Function to draw edges in batches using BFS traversal order
-  const drawEdgesSequentially = () => {
-    if (currentEdgeIndex >= totalEdges) {
-      const timeout = setTimeout(drawPartialPathSequentially, partialPathDelay);
-      animationTimeouts.push(timeout);
-      return;
-    }
-
-    const edgesToDraw = keyframes.all_edges.slice(
-      currentEdgeIndex,
-      currentEdgeIndex + edgeBatchSize,
-    );
-    edgesToDraw.forEach((edge: BlockedEdge) => {
-      drawBlockedEdge(map, allEdgesContext, edge);
-    });
-    currentEdgeIndex += edgeBatchSize;
-    const timeout = setTimeout(drawEdgesSequentially, edgeBatchDelay);
-    animationTimeouts.push(timeout);
-  };
-
-  // Function to draw partial path one by one with delay
-  const partialPath = keyframes.partial_path || [];
-  const totalPartialPath = partialPath.length;
-  let currentPartialPathIndex = 0;
+  let currentPartialIndex = 0;
 
   const drawPartialPathSequentially = () => {
-    if (currentPartialPathIndex >= totalPartialPath) {
-      const timeout = setTimeout(drawFinalPath, finalPathDelay);
-      animationTimeouts.push(timeout);
+    if (currentPartialIndex >= partialPath.length) {
+      console.log(
+        `Partial path animation completed in ${(performance.now() - startTime).toFixed(2)}ms`,
+      );
+      setTimeout(drawFinalPath, FINAL_PATH_DELAY);
       return;
     }
 
-    const point = partialPath[currentPartialPathIndex];
-    if (!point || !point.coordinates || point.coordinates.length !== 2) {
-      console.error('Invalid point in partial_path:', point);
-      currentPartialPathIndex++;
-      setTimeout(drawPartialPathSequentially, partialPathDelay);
+    const point = partialPath[currentPartialIndex];
+
+    // Validate point before using it
+    if (!isValidPathPoint(point)) {
+      console.error('Invalid path point:', point);
+      currentPartialIndex++;
+      setTimeout(drawPartialPathSequentially, PARTIAL_PATH_DELAY);
       return;
     }
 
-    const coord = fromLonLat(point.coordinates);
-    const pixel = map.getPixelFromCoordinate(coord);
-    if (!pixel) return;
+    try {
+      const coord = fromLonLat(point.coordinates);
+      const pixel = map.getPixelFromCoordinate(coord);
 
-    partialPathContext.beginPath();
-    if (currentPartialPathIndex === 0) {
-      partialPathContext.moveTo(pixel[0], pixel[1]);
-    } else {
-      const prevPoint = partialPath[currentPartialPathIndex - 1];
-      if (
-        !prevPoint ||
-        !prevPoint.coordinates ||
-        prevPoint.coordinates.length !== 2
-      ) {
-        console.error('Invalid previous point in partial_path:', prevPoint);
-        currentPartialPathIndex++;
-        setTimeout(drawPartialPathSequentially, partialPathDelay);
-        return;
+      if (pixel) {
+        partialPathContext.beginPath();
+        partialPathContext.arc(pixel[0], pixel[1], 3, 0, 2 * Math.PI);
+        partialPathContext.fillStyle = '#FFA500';
+        partialPathContext.fill();
       }
-      const prevCoord = fromLonLat(prevPoint.coordinates);
-      const prevPixel = map.getPixelFromCoordinate(prevCoord);
-      if (prevPixel) {
-        partialPathContext.moveTo(prevPixel[0], prevPixel[1]);
-        partialPathContext.lineTo(pixel[0], pixel[1]);
-      }
+
+      currentPartialIndex++;
+      setTimeout(drawPartialPathSequentially, PARTIAL_PATH_DELAY);
+    } catch (error) {
+      console.error('Error drawing path point:', error);
+      currentPartialIndex++;
+      setTimeout(drawPartialPathSequentially, PARTIAL_PATH_DELAY);
     }
-    partialPathContext.strokeStyle = '#FFA500'; // Orange for partial path
-    partialPathContext.lineWidth = 3;
-    partialPathContext.setLineDash([10, 10]);
-    partialPathContext.stroke();
-    partialPathContext.setLineDash([]);
-
-    currentPartialPathIndex++;
-    const timeout = setTimeout(drawPartialPathSequentially, partialPathDelay);
-    animationTimeouts.push(timeout);
   };
 
-  // Function to draw the final path with different color
   const drawFinalPath = () => {
+    console.log('Drawing Final Path...');
     const finalPath = keyframes.final_path?.path || [];
-    const distance = keyframes.final_path?.distance ?? 0;
 
-    if (finalPath.length >= 2) {
+    if (finalPath.length < 2) {
+      console.warn('Final path has insufficient points');
+      useRouteStore.getState().setIsCalculating(false);
+      return;
+    }
+
+    try {
       finalPathContext.beginPath();
-      finalPath.forEach((point: PathPoint, index: number) => {
-        if (!point.coordinates || point.coordinates.length !== 2) {
-          console.error('Invalid point in final_path:', point);
-          return;
+
+      // Validate and draw first point
+      if (!isValidPathPoint(finalPath[0])) {
+        throw new Error('Invalid first point in final path');
+      }
+
+      const firstCoord = fromLonLat(finalPath[0].coordinates);
+      const firstPixel = map.getPixelFromCoordinate(firstCoord);
+      if (!firstPixel) {
+        throw new Error('Could not get pixel coordinates for first point');
+      }
+
+      finalPathContext.moveTo(firstPixel[0], firstPixel[1]);
+
+      // Draw lines to subsequent points
+      for (let i = 1; i < finalPath.length; i++) {
+        if (!isValidPathPoint(finalPath[i])) {
+          console.warn(`Skipping invalid point at index ${i}`);
+          continue;
         }
-        const coord = fromLonLat(point.coordinates);
+
+        const coord = fromLonLat(finalPath[i].coordinates);
         const pixel = map.getPixelFromCoordinate(coord);
-        if (!pixel) return;
-        index === 0
-          ? finalPathContext.moveTo(pixel[0], pixel[1])
-          : finalPathContext.lineTo(pixel[0], pixel[1]);
-      });
-      finalPathContext.strokeStyle = '#0000FF'; // Blue for final path
+        if (!pixel) continue;
+
+        finalPathContext.lineTo(pixel[0], pixel[1]);
+      }
+
+      finalPathContext.strokeStyle = '#0000FF';
       finalPathContext.lineWidth = 4;
       finalPathContext.stroke();
+    } catch (error) {
+      console.error('Error drawing final path:', error);
+    } finally {
+      useRouteStore.getState().setIsCalculating(false);
     }
-
-    // Optionally, display distance or other info
-    // For example, add a text label at the end point
-    if (finalPath.length > 0) {
-      const lastPoint = finalPath[finalPath.length - 1];
-      if (!lastPoint.coordinates || lastPoint.coordinates.length !== 2) {
-        console.error('Invalid last point coordinates:', lastPoint);
-        return;
-      }
-      const coord = fromLonLat(lastPoint.coordinates);
-      const pixel = map.getPixelFromCoordinate(coord);
-      if (pixel) {
-        finalPathContext.fillStyle = '#000000'; // Black text
-        finalPathContext.font = '16px Arial';
-        finalPathContext.fillText(
-          `${distance.toFixed(2)} km`,
-          pixel[0] + 5,
-          pixel[1] - 5,
-        );
-      }
-    }
-
-    // Set isCalculating to false when animation completes
-    useRouteStore.getState().setIsCalculating(false);
   };
 
-  // Function to handle map interactions
-  const handleInteractionStart = () => {
-    // Hide all canvases during interaction
-    partialPathCanvas.style.display = 'none';
-    finalPathCanvas.style.display = 'none';
-    allEdgesCanvas.style.display = 'none';
-  };
-
-  const handleInteractionEnd = () => {
-    // Show canvases after interaction
-    partialPathCanvas.style.display = 'block';
-    finalPathCanvas.style.display = 'block';
-    allEdgesCanvas.style.display = 'block';
-    // Restart the animation
-    currentEdgeIndex = 0;
-    currentPartialPathIndex = 0;
-    partialPathContext.clearRect(
-      0,
-      0,
-      partialPathCanvas.width,
-      partialPathCanvas.height,
-    );
-    finalPathContext.clearRect(
-      0,
-      0,
-      finalPathCanvas.width,
-      finalPathCanvas.height,
-    );
-    allEdgesContext.clearRect(
-      0,
-      0,
-      allEdgesCanvas.width,
-      allEdgesCanvas.height,
-    );
-    useRouteStore.getState().setIsCalculating(true); // Set isCalculating to true when animation restarts
-    drawEdgesSequentially();
-  };
-
-  // Cleanup function
-  const cleanup = () => {
-    // Clear all pending timeouts
-    animationTimeouts.forEach((timeout) => clearTimeout(timeout));
-    animationTimeouts = [];
-
-    // Remove event listeners
-    map.un('movestart', handleInteractionStart);
-    map.un('moveend', handleInteractionEnd);
-
-    // Clear canvases
-    partialPathContext.clearRect(
-      0,
-      0,
-      partialPathCanvas.width,
-      partialPathCanvas.height,
-    );
-    finalPathContext.clearRect(
-      0,
-      0,
-      finalPathCanvas.width,
-      finalPathCanvas.height,
-    );
-    allEdgesContext.clearRect(
-      0,
-      0,
-      allEdgesCanvas.width,
-      allEdgesCanvas.height,
-    );
-
-    // Set isCalculating to false when animation is cleaned up
-    useRouteStore.getState().setIsCalculating(false);
-  };
-
-  // Attach interaction handlers
-  map.on('movestart', handleInteractionStart);
-  map.on('moveend', handleInteractionEnd);
-
-  // Start the animations
-  drawEdgesSequentially();
-
-  // Return the cleanup function
-  return cleanup;
-};
-
-/**
- * Add Route Layer to Map and handle animation
- */
-export const addRouteLayerToMap = async (
-  map: OlMap,
-  keyframes: Keyframes,
-  previousCleanup: (() => void) | null,
-): Promise<(() => void) | null> => {
-  if (previousCleanup) {
-    previousCleanup();
-  }
-
-  try {
-    const cleanup = animateKeyframes(map, keyframes);
-    return cleanup;
-  } catch (error) {
-    console.error('Error animating keyframes:', error);
-    return () => {};
-  }
-};
-
-/**
- * New Function: Fetch Blocked Edges from API and Draw Them
- */
-export const fetchAndDrawBlockedEdges = async (
-  map: OlMap,
-  shipSpeed: number,
-  loadCondition: string,
-) => {
-  const allEdgesCanvas = document.querySelector(
-    'canvas.all-edges-canvas',
-  ) as HTMLCanvasElement;
-  const allEdgesContext = allEdgesCanvas.getContext('2d');
-  if (!allEdgesContext)
-    throw new Error('All Edges Canvas context is undefined');
-
-  const view = map.getView();
-  const extent = view.calculateExtent(map.getSize()); // [minX, minY, maxX, maxY]
-
-  // Mengonversi extent ke koordinat longitude dan latitude menggunakan toLonLat
-  const minCoord: Coordinate = toLonLat([extent[0], extent[1]]);
-  const maxCoord: Coordinate = toLonLat([extent[2], extent[3]]);
-
-  const minLon = minCoord[0];
-  const minLat = minCoord[1];
-  const maxLon = maxCoord[0];
-  const maxLat = maxCoord[1];
-
-  // Debug: Log koordinat untuk verifikasi
-  console.log('Converted Coordinates:', { minLon, minLat, maxLon, maxLat });
-
-  try {
-    // Panggil API get_blocked_edges_in_view
-    const response = await axios.post(
-      'http://localhost:5000/get_blocked_edges_in_view',
-      {
-        view_bounds: [minLon, minLat, maxLon, maxLat],
-        ship_speed: shipSpeed,
-        condition: loadCondition === 'ballast' ? 1 : 0,
-      },
-    );
-
-    const blockedEdges: BlockedEdge[] = response.data.blocked_edges;
-
-    // Debug: Log jumlah edges yang diterima
-    console.log(`Received ${blockedEdges.length} blocked edges`);
-
-    // Clear previous edges
-    allEdgesContext.clearRect(
-      0,
-      0,
-      allEdgesCanvas.width,
-      allEdgesCanvas.height,
-    );
-
-    // Draw new edges
-    blockedEdges.forEach((edge: BlockedEdge) => {
-      drawBlockedEdge(map, allEdgesContext, edge);
-    });
-  } catch (error) {
-    console.error('Error fetching blocked edges:', error);
-  }
+  drawPartialPathSequentially();
+  return () => {};
 };

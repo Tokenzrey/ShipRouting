@@ -1,3 +1,5 @@
+# src/app/dashboard/components/createCanvasLayers.ts
+
 import os
 import json
 import hashlib
@@ -595,12 +597,12 @@ class RouteOptimizer:
         for e in self.igraph_graph.es:
             src = self.igraph_graph.vs[e.source]
             tgt = self.igraph_graph.vs[e.target]
-            min_lon = min(src["lon"], tgt["lon"])
-            min_lat = min(src["lat"], tgt["lat"])
-            max_lon = max(src["lon"], tgt["lon"])
-            max_lat = max(src["lat"], tgt["lat"])
+            # NumPy untuk operasi min/max lebih cepat
+            lon_min, lat_min = np.minimum(src["lon"], tgt["lon"]), np.minimum(src["lat"], tgt["lat"])
+            lon_max, lat_max = np.maximum(src["lon"], tgt["lon"]), np.maximum(src["lat"], tgt["lat"])
+
             # Insert edge index with bounding box
-            self.edge_spatial_index.insert(e.index, (min_lon, min_lat, max_lon, max_lat))
+            self.edge_spatial_index.insert(e.index, (lon_min, lat_min, lon_max, lat_max))
         logger.info("Spatial index built successfully.")
 
     def get_blocked_edges_in_view(
@@ -610,52 +612,88 @@ class RouteOptimizer:
         condition: int = 1
     ) -> List[Dict[str, Any]]:
         """
-        Mendapatkan daftar edges yang diblokir dalam area view_bounds.
-        
-        :param view_bounds: Tuple (min_lon, min_lat, max_lon, max_lat)
-        :param ship_speed: Kecepatan kapal
-        :param condition: Kondisi kapal
-        :return: List of blocked edges within view
+        Mengambil daftar edges dalam viewport dan menentukan apakah mereka diblokir.
+        Menggunakan batch processing untuk optimasi kinerja.
         """
+        from concurrent.futures import ThreadPoolExecutor
+        import numpy as np
+
+        MAX_BLOCKED_EDGES = 100000  # Batasi jumlah hasil akhir
+        BATCH_SIZE = 1000           # Batasi batch per pemrosesan
+
         min_lon, min_lat, max_lon, max_lat = view_bounds
-        logger.info(f"Querying blocked edges within view: {view_bounds}")
+        logger.info(f"Querying edges within view: {view_bounds}")
 
-        # Cari semua edges yang intersect dengan view bounds
+        # Cari semua edges dalam bounding box
         candidate_edge_ids = list(self.edge_spatial_index.intersection(view_bounds))
-        logger.info(f"Found {len(candidate_edge_ids)} candidate edges within view.")
+        logger.info(f"Found {len(candidate_edge_ids)} candidate edges in view.")
 
-        blocked_edges = []
+        if not candidate_edge_ids:
+            return []
+
         wave_data_id = self._get_wave_data_identifier()
+        self.edge_cache.set_current_wave_data_id(wave_data_id)
 
-        for eid in candidate_edge_ids:
-            e = self.igraph_graph.es[eid]
-            src = self.igraph_graph.vs[e.source]
-            tgt = self.igraph_graph.vs[e.target]
-            edge_info = {
-                "edge_id": eid,
-                "source_coords": (src["lon"], src["lat"]),
-                "target_coords": (tgt["lon"], tgt["lat"]),
-                "ship_speed": ship_speed,
-                "condition": condition
-            }
-            cached = self.edge_cache.get_cached_predictions(edge_info, wave_data_id)
-            is_blocked = False
-            if cached:
-                is_blocked = cached.get("blocked", False)
-            else:
-                # Jika tidak ada cache, tentukan apakah edge diblokir berdasarkan atribut
-                is_blocked = (e["roll"] >= 6) or (e["heave"] >= 0.7) or (e["pitch"] >= 3)
-
-            if is_blocked:
-                blocked_edges.append({
+        # **Persiapkan edge data untuk batch processing**
+        def prepare_edge(eid):
+            """Mempersiapkan informasi edge berdasarkan ID."""
+            try:
+                e = self.igraph_graph.es[eid]
+                src = self.igraph_graph.vs[e.source]
+                tgt = self.igraph_graph.vs[e.target]
+                return {
                     "edge_id": eid,
-                    "source_coords": edge_info["source_coords"],
-                    "target_coords": edge_info["target_coords"],
-                    "isBlocked": is_blocked
-                })
+                    "source_coords": (src["lon"], src["lat"]),
+                    "target_coords": (tgt["lon"], tgt["lat"]),
+                    "ship_speed": ship_speed,
+                    "condition": condition
+                }
+            except Exception as err:
+                logger.error(f"Error processing edge {eid}: {err}")
+                return None
 
-        logger.info(f"Total blocked edges in view: {len(blocked_edges)}")
-        return blocked_edges
+        # **Gunakan ThreadPoolExecutor untuk mempercepat pemrosesan edges**
+        with ThreadPoolExecutor() as executor:
+            edges_to_process = list(filter(None, executor.map(prepare_edge, candidate_edge_ids)))
+
+        if not edges_to_process:
+            logger.info("No valid edges found within view bounds.")
+            return []
+
+        logger.info(f"Processing {len(edges_to_process)} edges in batch...")
+
+        # **Batch processing edges**
+        edge_res = []
+        for i in range(0, len(edges_to_process), BATCH_SIZE):
+            batch = edges_to_process[i:i + BATCH_SIZE]
+            batch_result = self._batch_process_edges(batch, wave_data_id)
+            if batch_result:
+                edge_res.extend(batch_result)
+
+        # **Validasi panjang hasil batch processing**
+        if len(edge_res) != len(edges_to_process):
+            logger.warning(f"Mismatch: expected {len(edges_to_process)}, got {len(edge_res)}")
+            return []
+
+        # **Hitung status blocked berdasarkan roll, heave, pitch**
+        is_blocked = np.array([
+            er.get("blocked", False) or er.get("roll", 0.0) >= 6 or er.get("heave", 0.0) >= 0.7 or er.get("pitch", 0.0) >= 3
+            for er in edge_res
+        ])
+
+        # **Bangun hasil akhir**
+        edges_in_view = [
+            {
+                "edge_id": edge_info["edge_id"],
+                "source_coords": edge_info["source_coords"],
+                "target_coords": edge_info["target_coords"],
+                "isBlocked": bool(blocked)
+            }
+            for edge_info, blocked in zip(edges_to_process, is_blocked)
+        ][:MAX_BLOCKED_EDGES]
+
+        logger.info(f"Total edges in view after filtering: {len(edges_in_view)}")
+        return edges_in_view
 
     def find_shortest_path(
         self,
@@ -716,8 +754,7 @@ class RouteOptimizer:
             logger.info(f"Batch processing edges => wave_data_id={wave_data_id} ...")
             edge_res = self._batch_process_edges(edges_data, wave_data_id)
 
-            # Update graph edges: if blocked or roll/heave/pitch melebihi ambang => weight=inf
-            # Optimasi: Gunakan numpy untuk operasi batch
+            # Update graph edges: if blocked => weight=inf
             is_blocked = np.array([
                 er["blocked"] or er["roll"] >= 6 or er["heave"] >= 0.7 or er["pitch"] >= 3
                 for er in edge_res
@@ -766,8 +803,10 @@ class RouteOptimizer:
                         heave = float(gcopy.es[eid]["heave"]) if "heave" in gcopy.es[eid].attributes() else 0.0
                         pitch = float(gcopy.es[eid]["pitch"]) if "pitch" in gcopy.es[eid].attributes() else 0.0
 
-                    bearing = self._compute_bearing(coords, (nxt["lon"], nxt["lat"]))
-                    heading = self._compute_heading(bearing, float(wave_data.get("dirpwsfc", 0.0)))
+                        bearing = self._compute_bearing(coords, (nxt["lon"], nxt["lat"]))
+                        heading = self._compute_heading(bearing, float(wave_data.get("dirpwsfc", 0.0)))
+                    else:
+                        heading = 0.0  # No heading for the last node
                 else:
                     heading = 0.0  # No heading for the last node
 
@@ -907,3 +946,4 @@ class RouteOptimizer:
                 start, end, use_model, ship_speed, condition, path_data, distance, partial_paths, all_edges
             )
             return path_data, distance, partial_paths, all_edges
+

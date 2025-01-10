@@ -30,7 +30,7 @@ import { updateDynamicGridLayer } from '../components/OverlayHandler';
 import { addWaveLayerToMap } from '../components/AnimateHandler';
 import {
   initializeCanvasLayers,
-  addRouteLayerToMap,
+  animateKeyframes,
 } from '../components/createCanvasLayers';
 import { calculateDistanceAndDuration } from '@/components/nav-main';
 
@@ -103,6 +103,7 @@ const MeterGridMap: React.FC = () => {
   const [safestKeyframes, setSafestKeyframes] = useState<Keyframes | null>(
     null,
   );
+  const [isDrawing, setIsDrawing] = useState(false);
 
   const optimalRoute = useRouteStore((state) => state.optimalRoute);
   const activeRoute = useRouteStore((state) => state.activeRoute);
@@ -118,6 +119,7 @@ const MeterGridMap: React.FC = () => {
     shipSpeed,
     loadCondition,
     isCalculating,
+    isUpdate,
     setOptimalDistance,
     setSafestDistance,
     setOptimalDuration,
@@ -126,6 +128,7 @@ const MeterGridMap: React.FC = () => {
     setSafestRoute,
     resetKeyframes,
     setRouteSelected,
+    setIsUpdate,
   } = useRouteStore();
 
   // Constants for z-index management
@@ -355,6 +358,7 @@ const MeterGridMap: React.FC = () => {
       });
     });
 
+    setIsCalculating(false);
     initializeRouteLayerSync();
 
     return () => {
@@ -364,10 +368,20 @@ const MeterGridMap: React.FC = () => {
 
   useEffect(() => {
     if (!mapInstanceRef.current) return;
-
     const map = mapInstanceRef.current;
 
     initializeCanvasLayers(map, shipSpeed, loadCondition);
+
+    return () => {
+      // Remove canvas layers on cleanup
+      const targetElement = map.getTargetElement();
+      if (targetElement) {
+        const canvases = targetElement.querySelectorAll(
+          'canvas.partial-path-canvas, canvas.final-path-canvas, canvas.all-edges-canvas',
+        );
+        canvases.forEach((canvas) => canvas.remove());
+      }
+    };
   }, [shipSpeed, loadCondition]);
 
   useEffect(() => {
@@ -507,99 +521,90 @@ const MeterGridMap: React.FC = () => {
     }
   }, [locations]);
 
-  useEffect(() => {
-    // Perbaiki penggunaan ternary operator dengan nilai default
-    const useModel =
-      RouteSelected === 'normal'
-        ? false
-        : RouteSelected === 'safest'
-          ? true
-          : false;
+  // ⏳ **useEffect 1: Menjalankan perhitungan rute saat tombol ditekan**
+  const handleRouteCalculation = async () => {
+    if (!isUpdate || isCalculating) return;
+    setIsUpdate(false);
 
-    if (RouteSelected === 'normal' || RouteSelected === 'safest') {
-      const currentRouteCondition: 'normal' | 'safest' = RouteSelected;
+    console.log('📌 Calculating route...', RouteSelected);
+    const useModel = RouteSelected === 'safest';
 
-      calculateDistanceAndDuration(
-        useModel,
-        locations,
-        shipSpeed,
-        loadCondition,
-        currentRouteCondition,
-        resetKeyframes,
-        setOptimalKeyframes,
-        setSafestKeyframes,
-        setOptimalDistance,
-        setOptimalDuration,
-        setOptimalRoute,
-        setSafestDistance,
-        setSafestDuration,
-        setSafestRoute,
-        isCalculating,
-        setRouteSelected,
-      );
+    try {
+      if (RouteSelected === 'normal' || RouteSelected === 'safest') {
+        console.log('🚀 Starting calculation for', RouteSelected);
+
+        await calculateDistanceAndDuration(
+          useModel,
+          locations,
+          shipSpeed,
+          loadCondition,
+          RouteSelected,
+          resetKeyframes,
+          setOptimalKeyframes,
+          setSafestKeyframes,
+          setOptimalDistance,
+          setOptimalDuration,
+          setOptimalRoute,
+          setSafestDistance,
+          setSafestDuration,
+          setSafestRoute,
+          isCalculating,
+          setRouteSelected,
+        );
+      }
+
+      console.log('✅ Calculation done! Setting isDrawing to true.');
+      setIsDrawing(true);
+    } catch (error) {
+      console.error('❌ Error during calculation:', error);
     }
-  }, [RouteSelected, isCalculating]);
+  };
 
   useEffect(() => {
+    handleRouteCalculation();
+  }, [isUpdate]);
+
+  // 🎨 **useEffect 2: Menggambar path setelah perhitungan selesai**
+  useEffect(() => {
+    console.log('dariwing route init....', isDrawing);
+    if (!isDrawing) return; // ⛔ Jangan gambar jika belum siap
+    setIsDrawing(false); // Reset state agar tidak berulang
+
+    console.log('🎬 Drawing route on map...');
     const map = mapInstanceRef.current;
     if (!map) return;
 
-    if (RouteSelected && !isCalculating) {
-      // Tentukan keyframes berdasarkan RouteSelected
-      let keyframes: Keyframes | null = null;
+    let keyframes: Keyframes | null = null;
 
-      if (
-        RouteSelected === 'normal' &&
-        optimalKeyframes?.final_path &&
-        optimalKeyframes.partial_path &&
-        optimalKeyframes.all_edges
-      ) {
-        keyframes = {
-          final_path: {
-            path: optimalKeyframes?.final_path.path,
-            distance: optimalKeyframes?.final_path.distance,
-          },
-          partial_path: optimalKeyframes?.partial_path,
-          all_edges: optimalKeyframes.all_edges,
-        };
-      } else if (
-        RouteSelected === 'safest' &&
-        safestKeyframes?.final_path &&
-        safestKeyframes?.partial_path &&
-        safestKeyframes.all_edges
-      ) {
-        keyframes = {
-          final_path: {
-            path: safestKeyframes?.final_path.path,
-            distance: safestKeyframes?.final_path.distance,
-          },
-          partial_path: safestKeyframes?.partial_path,
-          all_edges: safestKeyframes.all_edges,
-        };
-      }
-
-      if (keyframes) {
-        // Panggil addRouteLayerToMap dengan keyframes yang sesuai
-        console.log('Adding route layer with keyframes:', keyframes);
-        addRouteLayerToMap(map, keyframes, animationCleanupRef.current)
-          .then((cleanup) => {
-            // Simpan fungsi cleanup untuk animasi berikutnya
-            animationCleanupRef.current = cleanup;
-          })
-          .catch((error) => {
-            console.error('Error animating keyframes:', error);
-          });
-      }
+    if (RouteSelected === 'normal' && optimalKeyframes) {
+      keyframes = {
+        final_path: { ...optimalKeyframes.final_path },
+        partial_path: [...optimalKeyframes.partial_path],
+        all_edges: [...optimalKeyframes.all_edges],
+      };
+    } else if (RouteSelected === 'safest' && safestKeyframes) {
+      keyframes = {
+        final_path: { ...safestKeyframes.final_path },
+        partial_path: [...safestKeyframes.partial_path],
+        all_edges: [...safestKeyframes.all_edges],
+      };
     }
 
-    // Cleanup ketika component unmount atau sebelum animasi baru dimulai
+    if (keyframes) {
+      console.log('🎥 Animating keyframes:', keyframes);
+      if (animationCleanupRef.current) {
+        animationCleanupRef.current(); // Hentikan animasi sebelumnya sebelum memulai yang baru
+      }
+      animationCleanupRef.current = animateKeyframes(map, keyframes);
+    }
+
     return () => {
       if (animationCleanupRef.current) {
         animationCleanupRef.current();
         animationCleanupRef.current = null;
       }
     };
-  }, [RouteSelected, isCalculating, optimalRoute, safestRoute]);
+  }, [isDrawing]); // **Trigger hanya saat isDrawing berubah**
 
   function renderOverlayLegend() {
     if (overlayType === 'none') {
