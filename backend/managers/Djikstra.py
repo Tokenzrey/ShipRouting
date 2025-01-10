@@ -536,46 +536,41 @@ class RouteOptimizer:
         ) -> List[dict]:
         """
         Filter edges within view bounds that are blocked.
-        
-        Optimizations:
-        1. Uses list comprehension for better performance
-        2. Pre-filters blocked edges
-        3. Caches vertex coordinates
-        4. Uses tuple unpacking for cleaner code
-        5. Implements early return if no blocked edges
+        Eliminates all redundant operations for maximum efficiency.
         """
         min_lon, min_lat, max_lon, max_lat = view_bounds
         g = self.igraph_graph
-        
-        # Early return if no blocked edges
-        blocked_edges = [e for e in g.es if e["isBlocked"]]
-        if not blocked_edges:
-            logger.info("get_blocked_edges_in_view => No blocked edges found.")
-            return []
-        
-        # Cache vertex coordinates for faster access
-        vertex_coords = {
-            v.index: (v["lon"], v["lat"]) 
-            for v in g.vs
-        }
-        
-        def is_in_bounds(lon, lat):
-            return min_lon <= lon <= max_lon and min_lat <= lat <= max_lat
-        
         edges_in_view = []
-        for e in blocked_edges[:max_blocked_edges]:
-            s_coords = vertex_coords[e.source]
-            t_coords = vertex_coords[e.target]
+        
+        # Directly filter and process edges
+        for edge in g.es:
+            # Skip immediately if not blocked
+            if not edge["isBlocked"]:
+                continue
+                
+            # Single lookup for vertices
+            source = g.vs[edge.source]
+            target = g.vs[edge.target]
             
-            # Check if either source or target is in bounds
-            if is_in_bounds(*s_coords) or is_in_bounds(*t_coords):
+            # Single lookup for coordinates
+            s_lon, s_lat = source["lon"], source["lat"]
+            t_lon, t_lat = target["lon"], target["lat"]
+            
+            # Single bounds check
+            if ((min_lon <= s_lon <= max_lon and min_lat <= s_lat <= max_lat) or 
+                (min_lon <= t_lon <= max_lon and min_lat <= t_lat <= max_lat)):
+                
                 edges_in_view.append({
-                    "edge_id": e.index,
-                    "source_coords": s_coords,
-                    "target_coords": t_coords,
+                    "edge_id": edge.index,
+                    "source_coords": (s_lon, s_lat),
+                    "target_coords": (t_lon, t_lat),
                     "isBlocked": True
                 })
-        
+                
+                # Early exit if max reached
+                if len(edges_in_view) >= max_blocked_edges:
+                    break
+
         logger.info(f"get_blocked_edges_in_view => total {len(edges_in_view)} blocked edges returned.")
         return edges_in_view
 
