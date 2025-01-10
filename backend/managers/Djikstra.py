@@ -382,6 +382,9 @@ class RouteOptimizer:
         distance: float,
         partial_paths: List[List[dict]]
     ):
+        """
+        Menyimpan hasil Dijkstra baru dengan penanda "fixed": True.
+        """
         wave_data_id = self._get_wave_data_identifier()
         cache_file = os.path.join(self.dijkstra_cache_dir, f"{wave_data_id}.json")
         lock_file = f"{cache_file}.lock"
@@ -397,7 +400,8 @@ class RouteOptimizer:
             "distance": float(distance),
             "partial_paths": partial_paths,
             "all_edges": [],  # Kosong
-            "timestamp": datetime.utcnow().isoformat() + "Z"
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "fixed": True   # Tandai hasil dijkstra "fixed" (baru)
         }
 
         with FileLock(lock_file):
@@ -430,6 +434,9 @@ class RouteOptimizer:
         ship_speed: float,
         condition: int
     ) -> Optional[Dict[str, Any]]:
+        """
+        Hanya mengembalikan hasil Dijkstra yang "fixed" == True.
+        """
         wave_data_id = self._get_wave_data_identifier()
         cache_file = os.path.join(self.dijkstra_cache_dir, f"{wave_data_id}.json")
         if not os.path.exists(cache_file):
@@ -447,7 +454,6 @@ class RouteOptimizer:
         }, sort_keys=True)
         query_key = hashlib.sha256(query_str.encode()).hexdigest()
 
-        # Load
         with FileLock(lock_file):
             try:
                 with open(cache_file, 'r') as f:
@@ -463,8 +469,13 @@ class RouteOptimizer:
                 return None
 
         category = "with_model" if use_model else "without_model"
-        for item in cache_json["dijkstra_results"].get(category, []):
-            # Bikin item_str: sama persis
+        results_list = cache_json["dijkstra_results"].get(category, [])
+
+        for item in results_list:
+            # Pastikan item "fixed" == True
+            if not item.get("fixed", False):
+                continue
+
             item_str = json.dumps({
                 "start": item["start"],
                 "end": item["end"],
@@ -475,14 +486,14 @@ class RouteOptimizer:
             }, sort_keys=True)
             item_key = hashlib.sha256(item_str.encode()).hexdigest()
             if item_key == query_key:
-                logger.info("Found dijkstra result in local JSON => returning cache.")
+                logger.info("Found fixed dijkstra result in local JSON => returning cache.")
                 return {
                     "path": item["path"],
                     "distance": float(item["distance"]),
                     "partial_paths": item.get("partial_paths", []),
                     "all_edges": []
                 }
-        logger.info("No matching dijkstra result in local JSON.")
+        logger.info("No matching fixed dijkstra result in local JSON.")
         return None
 
     # ----------------------------------------------------------
@@ -576,7 +587,7 @@ class RouteOptimizer:
         return edges_in_view
 
     # ----------------------------------------------------------
-    #   find_shortest_path => more optimal Dijkstra
+    #   find_shortest_path => optimized Dijkstra
     # ----------------------------------------------------------
     def find_shortest_path(
         self,
@@ -627,8 +638,7 @@ class RouteOptimizer:
         # Priority queue => (distance, node)
         pq = [(0.0, start_idx)]
 
-        # partial_paths => menampung jalur START -> v 
-        # (hanya saat ada perbaikan jarak)
+        # partial_paths => menampung jalur START -> v
         partial_paths: List[List[dict]] = []
 
         while pq:
@@ -640,14 +650,13 @@ class RouteOptimizer:
             if current_dist > dist[u]:
                 continue
 
-            # Simpan partial path (ekspansi) => 
+            # Simpan partial path => path START->u
             path_u = self._reconstruct_path(gcopy, parent, u)
             expanded_path = self._build_path_data(gcopy, path_u)
             partial_paths.append(expanded_path)
 
             # Ekspansi neighbors
-            neighbors = gcopy.neighbors(u, mode="ALL")
-            for v in neighbors:
+            for v in gcopy.neighbors(u, mode="ALL"):
                 e_id = gcopy.get_eid(u, v)
                 w = gcopy.es[e_id]["weight"]
                 if w == float('inf'):
@@ -657,7 +666,6 @@ class RouteOptimizer:
                 if new_dist < dist[v]:
                     dist[v] = new_dist
                     parent[v] = u
-                    # Tambahkan ke PQ
                     heapq.heappush(pq, (new_dist, v))
 
         # Reconstruct final path from start_idx to end_idx
@@ -669,7 +677,7 @@ class RouteOptimizer:
         final_nodes = self._reconstruct_path(gcopy, parent, end_idx)
         path_data = self._build_path_data(gcopy, final_nodes)
 
-        # Simpan ke cache
+        # Simpan ke cache (fixed = True)
         self.save_dijkstra_result(
             start, end, use_model, ship_speed, condition, path_data, distance, partial_paths
         )
@@ -680,8 +688,7 @@ class RouteOptimizer:
     # ----------------------------------------------------------
     def _reconstruct_path(self, g: ig.Graph, parent: List[int], target_idx: int) -> List[int]:
         """
-        Rekonstruksi path (list of node indices) dari root
-        dengan parent[] ke target_idx.
+        Rekonstruksi path (list of node indices) dengan parent[] ke target_idx.
         """
         path = []
         cur = target_idx
