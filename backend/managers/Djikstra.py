@@ -588,22 +588,91 @@ class RouteOptimizer:
 
     def _build_spatial_index(self):
         """
-        Membangun spatial index (Rtree) untuk semua edges dalam graph.
+        Membangun spatial index (Rtree) untuk ~14 juta edges.
+        Menggunakan multithreading + batch approach agar lebih cepat.
         """
-        logger.info("Building spatial index for edges...")
-        p = index.Property()
-        p.dimension = 2  # 2D indexing
-        self.edge_spatial_index = index.Index(properties=p)
-        for e in self.igraph_graph.es:
-            src = self.igraph_graph.vs[e.source]
-            tgt = self.igraph_graph.vs[e.target]
-            # NumPy untuk operasi min/max lebih cepat
-            lon_min, lat_min = np.minimum(src["lon"], tgt["lon"]), np.minimum(src["lat"], tgt["lat"])
-            lon_max, lat_max = np.maximum(src["lon"], tgt["lon"]), np.maximum(src["lat"], tgt["lat"])
+        import time
+        from concurrent.futures import ThreadPoolExecutor
 
-            # Insert edge index with bounding box
-            self.edge_spatial_index.insert(e.index, (lon_min, lat_min, lon_max, lat_max))
-        logger.info("Spatial index built successfully.")
+        start_time = time.time()
+        logger.info("🔄 Building spatial index for edges (multithreaded, up to 14 million)...")
+
+        # Inisialisasi R-tree property
+        p = index.Property()
+        p.dimension = 2
+        p.leaf_capacity = 50000  # Atur kapasitas leaf lebih besar untuk data masif
+        p.fill_factor = 0.9      # Memungkinkan node terisi padat (trade-off)
+        self.edge_spatial_index = index.Index(properties=p)
+
+        # Konversi edges ke list agar bisa di-iterate
+        edges = list(self.igraph_graph.es)
+        total_edges = len(edges)
+        logger.info(f"⚙ Total edges: {total_edges}")
+
+        # Batasi ukuran batch. Terlalu besar => memory spike, terlalu kecil => overhead thread tinggi
+        BATCH_SIZE = 200000
+
+        # Bagi edges ke dalam batch
+        batches = [edges[i : i + BATCH_SIZE] for i in range(0, total_edges, BATCH_SIZE)]
+        logger.info(f"📦 Split edges into {len(batches)} batches with size ~{BATCH_SIZE} each.")
+
+        def process_edge_batch(edge_batch):
+            """
+            Menghitung bounding box (min_lon, min_lat, max_lon, max_lat) untuk setiap edge.
+            """
+            import numpy as np
+            indices = []
+            boxes = []
+
+            for e in edge_batch:
+                try:
+                    src = self.igraph_graph.vs[e.source]
+                    tgt = self.igraph_graph.vs[e.target]
+
+                    # Pakai NumPy min/max agar sedikit lebih cepat
+                    lon_min = min(src["lon"], tgt["lon"])
+                    lat_min = min(src["lat"], tgt["lat"])
+                    lon_max = max(src["lon"], tgt["lon"])
+                    lat_max = max(src["lat"], tgt["lat"])
+
+                    indices.append(e.index)
+                    boxes.append((lon_min, lat_min, lon_max, lat_max))
+                except Exception as err:
+                    logger.error(f"⚠️ Error processing edge {e.index}: {err}", exc_info=True)
+
+            return (indices, boxes)
+
+        # Kita siapkan semua bounding box secara paralel agar CPU usage optimal.
+        all_indices = []
+        all_boxes = []
+
+        # ThreadPoolExecutor akan menyesuaikan jumlah worker = jumlah CPU secara default
+        start_batch_time = time.time()
+        with ThreadPoolExecutor() as executor:
+            results = list(executor.map(process_edge_batch, batches))
+        logger.info(f"✅ Prepared bounding boxes in {time.time() - start_batch_time:.2f} s.")
+
+        # Gabungkan semua hasil
+        for (batch_indices, batch_boxes) in results:
+            all_indices.extend(batch_indices)
+            all_boxes.extend(batch_boxes)
+
+        # Bulk insertion ke R-tree
+        logger.info("🚀 Inserting bounding boxes into R-tree index...")
+        insert_start = time.time()
+
+        # *Jika* memori mencukupi, kita panggil `insert` satu-persatu.
+        # (rtree tidak punya “bulk insert” API resmi, tapi ini lumayan cepat karena data siap.)
+        for idx, box in zip(all_indices, all_boxes):
+            self.edge_spatial_index.insert(idx, box)
+
+        insert_end = time.time()
+        total_insert_time = insert_end - insert_start
+
+        elapsed = time.time() - start_time
+        logger.info(f"✅ Spatial index built for {len(all_indices)} edges in {elapsed:.2f} s total.")
+        logger.info(f"   ⤷  bounding box prep time: {(insert_start - start_time):.2f} s")
+        logger.info(f"   ⤷  insertion time        : {total_insert_time:.2f} s")
 
     def get_blocked_edges_in_view(
         self,
