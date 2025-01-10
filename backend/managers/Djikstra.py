@@ -674,83 +674,83 @@ class RouteOptimizer:
         logger.info(f"   ⤷  bounding box prep time: {(insert_start - start_time):.2f} s")
         logger.info(f"   ⤷  insertion time        : {total_insert_time:.2f} s")
 
-def get_blocked_edges_in_view(
-    self,
-    view_bounds: Tuple[float, float, float, float],
-    ship_speed: float = 8,
-    condition: int = 1,
-    MAX_BLOCKED_EDGES: int = 100_000
-) -> List[Dict[str, Any]]:
-    """
-    Mendapatkan daftar edge dan memutuskan apakah diblokir
-    TANPA rtree. 
-    - Langsung memproses seluruh edges di graph => filter bounding box.
-    - Waspada overhead pada dataset besar (bisa lambat).
-    """
-    min_lon, min_lat, max_lon, max_lat = view_bounds
-    logger.info(f"[NoSpatialIndex] Querying edges within view: {view_bounds}")
+    def get_blocked_edges_in_view(
+        self,
+        view_bounds: Tuple[float, float, float, float],
+        ship_speed: float = 8,
+        condition: int = 1,
+        MAX_BLOCKED_EDGES: int = 100_000
+    ) -> List[Dict[str, Any]]:
+        """
+        Mendapatkan daftar edge dan memutuskan apakah diblokir
+        TANPA rtree. 
+        - Langsung memproses seluruh edges di graph => filter bounding box.
+        - Waspada overhead pada dataset besar (bisa lambat).
+        """
+        min_lon, min_lat, max_lon, max_lat = view_bounds
+        logger.info(f"[NoSpatialIndex] Querying edges within view: {view_bounds}")
 
-    # 1. Ambil semua edges dari self.igraph_graph
-    #    (Jika dataset sangat besar, ini akan memakan memori)
-    g = self.igraph_graph
-    edges = g.es
-    wave_data_id = self._get_wave_data_identifier()
-    self.edge_cache.set_current_wave_data_id(wave_data_id)
+        # 1. Ambil semua edges dari self.igraph_graph
+        #    (Jika dataset sangat besar, ini akan memakan memori)
+        g = self.igraph_graph
+        edges = g.es
+        wave_data_id = self._get_wave_data_identifier()
+        self.edge_cache.set_current_wave_data_id(wave_data_id)
 
-    # 2. Bangun edges_data => siap untuk batch_process
-    edges_data: List[dict] = []
-    for e in edges:
-        s = g.vs[e.source]
-        t = g.vs[e.target]
+        # 2. Bangun edges_data => siap untuk batch_process
+        edges_data: List[dict] = []
+        for e in edges:
+            s = g.vs[e.source]
+            t = g.vs[e.target]
 
-        # Koordinat
-        s_lon, s_lat = s["lon"], s["lat"]
-        t_lon, t_lat = t["lon"], t["lat"]
+            # Koordinat
+            s_lon, s_lat = s["lon"], s["lat"]
+            t_lon, t_lat = t["lon"], t["lat"]
 
-        # Filter bounding box (dengan toleransi: sumber ATAU target di dalam bounds)
-        if (
-            (min_lon <= s_lon <= max_lon and min_lat <= s_lat <= max_lat) or
-            (min_lon <= t_lon <= max_lon and min_lat <= t_lat <= max_lat)
-        ):
-            edges_data.append({
-                "edge_id": e.index,
-                "source_coords": (s_lon, s_lat),
-                "target_coords": (t_lon, t_lat),
-                "ship_speed": ship_speed,
-                "condition": condition
+            # Filter bounding box (dengan toleransi: sumber ATAU target di dalam bounds)
+            if (
+                (min_lon <= s_lon <= max_lon and min_lat <= s_lat <= max_lat) or
+                (min_lon <= t_lon <= max_lon and min_lat <= t_lat <= max_lat)
+            ):
+                edges_data.append({
+                    "edge_id": e.index,
+                    "source_coords": (s_lon, s_lat),
+                    "target_coords": (t_lon, t_lat),
+                    "ship_speed": ship_speed,
+                    "condition": condition
+                })
+
+        logger.info(f"[NoSpatialIndex] Found {len(edges_data)} edges that intersect bounding box.")
+
+        if not edges_data:
+            return []
+
+        # 3. Jalankan batch process => menghasilkan blocked, roll, heave, pitch
+        edge_res = self._batch_process_edges(edges_data, wave_data_id)
+
+        if len(edge_res) != len(edges_data):
+            logger.warning(f"Mismatch results: expected {len(edges_data)}, got {len(edge_res)}")
+
+        # 4. Buat final list => masukkan isBlocked
+        edges_in_view = []
+        for ed, er in zip(edges_data, edge_res):
+            is_blocked = (er.get("blocked", False) 
+                        or er.get("roll", 0.0) >= 6 
+                        or er.get("heave", 0.0) >= 0.7 
+                        or er.get("pitch", 0.0) >= 3)
+
+            edges_in_view.append({
+                "edge_id": ed["edge_id"],
+                "source_coords": ed["source_coords"],
+                "target_coords": ed["target_coords"],
+                "isBlocked": bool(is_blocked)
             })
 
-    logger.info(f"[NoSpatialIndex] Found {len(edges_data)} edges that intersect bounding box.")
+        # 5. Batasi ke MAX_BLOCKED_EDGES
+        edges_in_view = edges_in_view[:MAX_BLOCKED_EDGES]
 
-    if not edges_data:
-        return []
-
-    # 3. Jalankan batch process => menghasilkan blocked, roll, heave, pitch
-    edge_res = self._batch_process_edges(edges_data, wave_data_id)
-
-    if len(edge_res) != len(edges_data):
-        logger.warning(f"Mismatch results: expected {len(edges_data)}, got {len(edge_res)}")
-
-    # 4. Buat final list => masukkan isBlocked
-    edges_in_view = []
-    for ed, er in zip(edges_data, edge_res):
-        is_blocked = (er.get("blocked", False) 
-                      or er.get("roll", 0.0) >= 6 
-                      or er.get("heave", 0.0) >= 0.7 
-                      or er.get("pitch", 0.0) >= 3)
-
-        edges_in_view.append({
-            "edge_id": ed["edge_id"],
-            "source_coords": ed["source_coords"],
-            "target_coords": ed["target_coords"],
-            "isBlocked": bool(is_blocked)
-        })
-
-    # 5. Batasi ke MAX_BLOCKED_EDGES
-    edges_in_view = edges_in_view[:MAX_BLOCKED_EDGES]
-
-    logger.info(f"[NoSpatialIndex] Total edges in view after filtering: {len(edges_in_view)}")
-    return edges_in_view
+        logger.info(f"[NoSpatialIndex] Total edges in view after filtering: {len(edges_in_view)}")
+        return edges_in_view
 
     def find_shortest_path(
         self,
