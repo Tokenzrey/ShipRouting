@@ -28,10 +28,6 @@ import {
 } from '../components/mapLayer';
 import { updateDynamicGridLayer } from '../components/OverlayHandler';
 import { addWaveLayerToMap } from '../components/AnimateHandler';
-import {
-  initializeCanvasLayers,
-  addRouteLayerToMap,
-} from '../components/createCanvasLayers';
 import { calculateDistanceAndDuration } from '@/components/nav-main';
 
 // UI Components
@@ -363,14 +359,6 @@ const MeterGridMap: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!mapInstanceRef.current) return;
-
-    const map = mapInstanceRef.current;
-
-    initializeCanvasLayers(map, shipSpeed, loadCondition);
-  }, [shipSpeed, loadCondition]);
-
-  useEffect(() => {
     syncRouteLayers();
   }, [optimalRoute, safestRoute, locations]);
 
@@ -506,100 +494,6 @@ const MeterGridMap: React.FC = () => {
       if (newFeatures) source?.addFeatures(newFeatures);
     }
   }, [locations]);
-
-  useEffect(() => {
-    // Perbaiki penggunaan ternary operator dengan nilai default
-    const useModel =
-      RouteSelected === 'normal'
-        ? false
-        : RouteSelected === 'safest'
-          ? true
-          : false;
-
-    if (RouteSelected === 'normal' || RouteSelected === 'safest') {
-      const currentRouteCondition: 'normal' | 'safest' = RouteSelected;
-
-      calculateDistanceAndDuration(
-        useModel,
-        locations,
-        shipSpeed,
-        loadCondition,
-        currentRouteCondition,
-        resetKeyframes,
-        setOptimalKeyframes,
-        setSafestKeyframes,
-        setOptimalDistance,
-        setOptimalDuration,
-        setOptimalRoute,
-        setSafestDistance,
-        setSafestDuration,
-        setSafestRoute,
-        isCalculating,
-        setRouteSelected,
-      );
-    }
-  }, [RouteSelected, isCalculating]);
-
-  useEffect(() => {
-    const map = mapInstanceRef.current;
-    if (!map) return;
-
-    if (RouteSelected && !isCalculating) {
-      // Tentukan keyframes berdasarkan RouteSelected
-      let keyframes: Keyframes | null = null;
-
-      if (
-        RouteSelected === 'normal' &&
-        optimalKeyframes?.final_path &&
-        optimalKeyframes.partial_path &&
-        optimalKeyframes.all_edges
-      ) {
-        keyframes = {
-          final_path: {
-            path: optimalKeyframes?.final_path.path,
-            distance: optimalKeyframes?.final_path.distance,
-          },
-          partial_path: optimalKeyframes?.partial_path,
-          all_edges: optimalKeyframes.all_edges,
-        };
-      } else if (
-        RouteSelected === 'safest' &&
-        safestKeyframes?.final_path &&
-        safestKeyframes?.partial_path &&
-        safestKeyframes.all_edges
-      ) {
-        keyframes = {
-          final_path: {
-            path: safestKeyframes?.final_path.path,
-            distance: safestKeyframes?.final_path.distance,
-          },
-          partial_path: safestKeyframes?.partial_path,
-          all_edges: safestKeyframes.all_edges,
-        };
-      }
-
-      if (keyframes) {
-        // Panggil addRouteLayerToMap dengan keyframes yang sesuai
-        console.log('Adding route layer with keyframes:', keyframes);
-        addRouteLayerToMap(map, keyframes, animationCleanupRef.current)
-          .then((cleanup) => {
-            // Simpan fungsi cleanup untuk animasi berikutnya
-            animationCleanupRef.current = cleanup;
-          })
-          .catch((error) => {
-            console.error('Error animating keyframes:', error);
-          });
-      }
-    }
-
-    // Cleanup ketika component unmount atau sebelum animasi baru dimulai
-    return () => {
-      if (animationCleanupRef.current) {
-        animationCleanupRef.current();
-        animationCleanupRef.current = null;
-      }
-    };
-  }, [RouteSelected, isCalculating, optimalRoute, safestRoute]);
 
   function renderOverlayLegend() {
     if (overlayType === 'none') {

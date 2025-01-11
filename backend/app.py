@@ -317,21 +317,3 @@ async def api_wave_data_by_coords(
     except Exception as e:
         logger.error(f"Error in /api/wave_data_by_coords: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error.")
-
-@app.post("/get_blocked_edges_in_view")
-async def get_blocked_edges_in_view(request: BlockedEdgesViewRequest):
-    try:
-        logging.info(f"Received request: {request}")
-        view_bounds = tuple(request.view_bounds)  # (min_lon, min_lat, max_lon, max_lat)
-        logging.info(f"Parsed view_bounds: {view_bounds}")
-
-        blocked_edges = route_optimizer.get_blocked_edges_in_view(
-            view_bounds=view_bounds,
-            ship_speed=request.ship_speed,
-            condition=request.condition
-        )
-        return {
-            "blocked_edges": blocked_edges
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))

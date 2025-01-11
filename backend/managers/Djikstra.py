@@ -244,10 +244,6 @@ class RouteOptimizer:
             compression_level=0
         )
 
-        # Spatial index untuk edges
-        self.edge_spatial_index = index.Index()
-        self._build_spatial_index()
-
     def finalize(self):
         """
         Dipanggil di shutdown => flush edge_cache
@@ -583,79 +579,6 @@ class RouteOptimizer:
         self.edge_cache._flush_to_disk(wave_data_id)
 
         return results
-
-    def _build_spatial_index(self):
-        """
-        Membangun spatial index (Rtree) untuk semua edges dalam graph.
-        """
-        logger.info("Building spatial index for edges...")
-        p = index.Property()
-        p.dimension = 2  # 2D indexing
-        self.edge_spatial_index = index.Index(properties=p)
-        for e in self.igraph_graph.es:
-            src = self.igraph_graph.vs[e.source]
-            tgt = self.igraph_graph.vs[e.target]
-            min_lon = min(src["lon"], tgt["lon"])
-            min_lat = min(src["lat"], tgt["lat"])
-            max_lon = max(src["lon"], tgt["lon"])
-            max_lat = max(src["lat"], tgt["lat"])
-            # Insert edge index with bounding box
-            self.edge_spatial_index.insert(e.index, (min_lon, min_lat, max_lon, max_lat))
-        logger.info("Spatial index built successfully.")
-
-    def get_blocked_edges_in_view(
-        self,
-        view_bounds: Tuple[float, float, float, float],
-        ship_speed: float = 8,
-        condition: int = 1
-    ) -> List[Dict[str, Any]]:
-        """
-        Mendapatkan daftar edges yang diblokir dalam area view_bounds.
-        
-        :param view_bounds: Tuple (min_lon, min_lat, max_lon, max_lat)
-        :param ship_speed: Kecepatan kapal
-        :param condition: Kondisi kapal
-        :return: List of blocked edges within view
-        """
-        min_lon, min_lat, max_lon, max_lat = view_bounds
-        logger.info(f"Querying blocked edges within view: {view_bounds}")
-
-        # Cari semua edges yang intersect dengan view bounds
-        candidate_edge_ids = list(self.edge_spatial_index.intersection(view_bounds))
-        logger.info(f"Found {len(candidate_edge_ids)} candidate edges within view.")
-
-        blocked_edges = []
-        wave_data_id = self._get_wave_data_identifier()
-
-        for eid in candidate_edge_ids:
-            e = self.igraph_graph.es[eid]
-            src = self.igraph_graph.vs[e.source]
-            tgt = self.igraph_graph.vs[e.target]
-            edge_info = {
-                "edge_id": eid,
-                "source_coords": (src["lon"], src["lat"]),
-                "target_coords": (tgt["lon"], tgt["lat"]),
-                "ship_speed": ship_speed,
-                "condition": condition
-            }
-            cached = self.edge_cache.get_cached_predictions(edge_info, wave_data_id)
-            is_blocked = False
-            if cached:
-                is_blocked = cached.get("blocked", False)
-            else:
-                # Jika tidak ada cache, tentukan apakah edge diblokir berdasarkan atribut
-                is_blocked = (e["roll"] >= 6) or (e["heave"] >= 0.7) or (e["pitch"] >= 3)
-
-            if is_blocked:
-                blocked_edges.append({
-                    "edge_id": eid,
-                    "source_coords": edge_info["source_coords"],
-                    "target_coords": edge_info["target_coords"],
-                    "isBlocked": is_blocked
-                })
-
-        logger.info(f"Total blocked edges in view: {len(blocked_edges)}")
-        return blocked_edges
 
     def find_shortest_path(
         self,
