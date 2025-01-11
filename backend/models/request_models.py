@@ -1,4 +1,4 @@
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, conlist
 
@@ -90,6 +90,6 @@ class DijkstraResponse(BaseModel):
     edge_blocks: List[EdgeBlock]
 
 class BlockedEdgesViewRequest(BaseModel):
-    view_bounds: Tuple[float, float, float, float]  # [min_lon, min_lat, max_lon, max_lat]
-    ship_speed: float = 8.0
-    condition: int = 1
+    view_bounds: List[float]  # [min_lon, min_lat, max_lon, max_lat]
+    ship_speed: Optional[float] = None
+    condition: Optional[int] = None
