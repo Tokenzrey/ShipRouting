@@ -28,6 +28,10 @@ import {
 } from '../components/mapLayer';
 import { updateDynamicGridLayer } from '../components/OverlayHandler';
 import { addWaveLayerToMap } from '../components/AnimateHandler';
+import {
+  initializeCanvasLayers,
+  animateKeyframes,
+} from '../components/createCanvasLayers';
 import { calculateDistanceAndDuration } from '@/components/nav-main';
 
 // UI Components
@@ -99,6 +103,7 @@ const MeterGridMap: React.FC = () => {
   const [safestKeyframes, setSafestKeyframes] = useState<Keyframes | null>(
     null,
   );
+  const [isDrawing, setIsDrawing] = useState(false);
 
   const optimalRoute = useRouteStore((state) => state.optimalRoute);
   const activeRoute = useRouteStore((state) => state.activeRoute);
@@ -114,6 +119,7 @@ const MeterGridMap: React.FC = () => {
     shipSpeed,
     loadCondition,
     isCalculating,
+    isUpdate,
     setOptimalDistance,
     setSafestDistance,
     setOptimalDuration,
@@ -122,6 +128,7 @@ const MeterGridMap: React.FC = () => {
     setSafestRoute,
     resetKeyframes,
     setRouteSelected,
+    setIsUpdate,
   } = useRouteStore();
 
   // Constants for z-index management
@@ -351,12 +358,31 @@ const MeterGridMap: React.FC = () => {
       });
     });
 
+    setIsCalculating(false);
     initializeRouteLayerSync();
 
     return () => {
       map.setTarget(undefined);
     };
   }, []);
+
+  useEffect(() => {
+    if (!mapInstanceRef.current) return;
+    const map = mapInstanceRef.current;
+
+    initializeCanvasLayers(map, shipSpeed, loadCondition);
+
+    return () => {
+      // Remove canvas layers on cleanup
+      const targetElement = map.getTargetElement();
+      if (targetElement) {
+        const canvases = targetElement.querySelectorAll(
+          'canvas.partial-path-canvas, canvas.final-path-canvas, canvas.all-edges-canvas',
+        );
+        canvases.forEach((canvas) => canvas.remove());
+      }
+    };
+  }, [shipSpeed, loadCondition]);
 
   useEffect(() => {
     syncRouteLayers();
@@ -494,6 +520,49 @@ const MeterGridMap: React.FC = () => {
       if (newFeatures) source?.addFeatures(newFeatures);
     }
   }, [locations]);
+
+  // ⏳ **useEffect 1: Menjalankan perhitungan rute saat tombol ditekan**
+  const handleRouteCalculation = async () => {
+    if (!isUpdate || isCalculating) return;
+    setIsUpdate(false);
+
+    console.log('📌 Calculating route...', RouteSelected);
+    const useModel = RouteSelected === 'safest';
+
+    try {
+      if (RouteSelected === 'normal' || RouteSelected === 'safest') {
+        console.log('🚀 Starting calculation for', RouteSelected);
+
+        await calculateDistanceAndDuration(
+          useModel,
+          locations,
+          shipSpeed,
+          loadCondition,
+          RouteSelected,
+          resetKeyframes,
+          setOptimalKeyframes,
+          setSafestKeyframes,
+          setOptimalDistance,
+          setOptimalDuration,
+          setOptimalRoute,
+          setSafestDistance,
+          setSafestDuration,
+          setSafestRoute,
+          isCalculating,
+          setRouteSelected,
+        );
+      }
+
+      console.log('✅ Calculation done! Setting isDrawing to true.');
+      setIsDrawing(true);
+    } catch (error) {
+      console.error('❌ Error during calculation:', error);
+    }
+  };
+
+  useEffect(() => {
+    handleRouteCalculation();
+  }, [isUpdate]);
 
   function renderOverlayLegend() {
     if (overlayType === 'none') {

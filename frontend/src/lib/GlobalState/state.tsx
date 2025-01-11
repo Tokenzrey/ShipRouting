@@ -66,7 +66,7 @@ interface RouteStore {
   safestRoute: PathPoint[];
   locationTypeToAdd: 'from' | 'destination' | null;
   activeRoute: 'safest' | 'optimal' | null;
-
+  isUpdate: Boolean;
   // Actions for locations
   addLocation: (location: Location) => void;
   removeLocation: (index: number) => void;
@@ -90,9 +90,9 @@ interface RouteStore {
   setExpansions: (expansions: Expansion[]) => void;
   setBlockedEdges: (edges: BlockedEdge[]) => void;
   addBlockedEdge: (edge: BlockedEdge) => void;
-  setIsCalculating: (isCaluclating: Boolean) => void;
+  setIsCalculating: (isCalculating: Boolean) => void;
   setRouteSelected: (routeSelected: string) => void;
-
+  setIsUpdate: (isUpdated: Boolean) => void;
   // New Setters for Keyframes
   setOptimalKeyframes: (keyframes: Keyframes) => void;
   setSafestKeyframes: (keyframes: Keyframes) => void;
@@ -129,7 +129,7 @@ export const useRouteStore = create(
       activeRoute: 'optimal',
       optimalKeyframes: null,
       safestKeyframes: null,
-
+      isUpdate: false,
       // Location actions
       addLocation: (location) =>
         set((state) => ({
@@ -179,12 +179,11 @@ export const useRouteStore = create(
       setBlockedEdges: (edges) => set({ blockedEdges: edges }),
       addBlockedEdge: (edge) =>
         set((state) => ({ blockedEdges: [...state.blockedEdges, edge] })),
-      setRouteSelected: (routeSelected) =>
-        set({ routeSelected: routeSelected }),
-      setIsCalculating: (isClaculating) =>
-        set({ isCalculating: isClaculating }),
+      setRouteSelected: (routeSelected) => set({ routeSelected }),
+      setIsCalculating: (isCalculating) => set({ isCalculating }),
       setOptimalKeyframes: (keyframes) => set({ optimalKeyframes: keyframes }),
       setSafestKeyframes: (keyframes) => set({ safestKeyframes: keyframes }),
+      setIsUpdate: (isUpdate) => set({ isUpdate }),
       resetKeyframes: () =>
         set({ optimalKeyframes: null, safestKeyframes: null }),
       clearRoutes: () =>
@@ -217,6 +216,7 @@ export const useRouteStore = create(
         isCalculating: state.isCalculating,
         optimalKeyframes: state.optimalKeyframes,
         safestKeyframes: state.safestKeyframes,
+        isUpdate: state.isUpdate,
         // Add placeholders for other fields to satisfy RouteStore type
         optimalRoute: state.optimalRoute,
         safestRoute: state.safestRoute,
@@ -244,6 +244,7 @@ export const useRouteStore = create(
         setIsCalculating: () => undefined,
         setOptimalKeyframes: () => undefined,
         setSafestKeyframes: () => undefined,
+        setIsUpdate: () => undefined,
         resetKeyframes: () => undefined,
         clearRoutes: () => undefined,
       }),
